@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Syntax & sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Syntax-check JavaScript
+        run: |
+          for f in server.js app.js mcp-server.js; do
+            echo "checking $f"
+            node --check "$f"
+          done
+
+      - name: Validate JSON files
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('package.json OK')"
+
+      - name: Validate library SVGs
+        run: |
+          node -e "
+            const fs = require('fs');
+            const dir = 'library/svg';
+            let bad = 0;
+            for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.svg'))) {
+              const s = fs.readFileSync(dir + '/' + f, 'utf8').trim();
+              if (!s.includes('<svg') || !s.endsWith('</svg>')) { console.error('malformed:', f); bad++; }
+            }
+            if (bad) process.exit(1);
+            console.log('all SVGs OK');
+          "
