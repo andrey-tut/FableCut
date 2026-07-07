@@ -204,6 +204,9 @@ input[type=range] { accent-color: var(--accent); height: 18px; }
 .clip .wave { position: absolute; inset: 3px 0; width: 100%; height: calc(100% - 6px); pointer-events: none; }
 .clip.c-text { background: linear-gradient(180deg, #ff7ac833, #ff7ac811), #6b2a53; }
 .clip.c-svg { background: linear-gradient(180deg, #ffd16633, #ffd16611), #6b5420; }
+.clip.c-adjust {
+  background: repeating-linear-gradient(135deg, #38bdf822 0 10px, transparent 10px 20px), #155e75;
+}
 
 /* ── Playhead ── */
 .playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: #ff4d6a; z-index: 4; pointer-events: none; }

@@ -34,18 +34,25 @@ const DEFAULT_PROPS = {
   blend: "normal",                             // canvas blend mode
   chromaKey: "", chromaTolerance: 26, chromaSoftness: 12,  // green-screen key
   bgRemove: false,                             // AI person cut-out (MediaPipe)
+  shake: 0, shakeSpeed: 8,                     // handheld/impact camera shake (px)
+  rgbSplit: 0,                                 // chromatic aberration (px)
+  grain: 0,                                    // film grain (%)
   text: "Title", fontSize: 72, color: "#ffffff", color2: "", font: "Segoe UI",
   bold: true, italic: false, weight: 0, align: "center",
   letterSpacing: 0, lineHeight: 1.2, uppercase: false, textShadow: 12,
+  glow: 0, glowColor: "",                      // neon glow (glowColor defaults to fill)
   textAnim: "none", wordRate: 0.15,
   strokeWidth: 0, strokeColor: "#000000", bgColor: "#000000", bgOpacity: 0,
 };
-const ANIMATABLE = ["x", "y", "scale", "rotation", "opacity", "volume", "brightness",
-  "contrast", "saturation", "hue", "blur", "grayscale", "sepia", "invert",
-  "temperature", "tint", "vignette", "cornerRadius", "fontSize", "letterSpacing"];
+const ANIMATABLE = ["x", "y", "scale", "rotation", "opacity", "volume", "speed",
+  "brightness", "contrast", "saturation", "hue", "blur", "grayscale", "sepia", "invert",
+  "temperature", "tint", "vignette", "cornerRadius", "shake", "rgbSplit", "grain",
+  "fontSize", "letterSpacing", "glow"];
 const TRANSITIONS = ["none", "fade", "slide-left", "slide-right", "slide-up", "slide-down",
-  "zoom", "wipe", "wipe-right", "wipe-up", "wipe-down", "iris", "spin", "blur", "whip"];
-const TEXT_ANIMS = ["none", "typewriter", "word-pop", "word-slide", "karaoke"];
+  "zoom", "wipe", "wipe-right", "wipe-up", "wipe-down", "iris", "spin", "blur", "whip",
+  "glitch", "pop"];
+const TEXT_ANIMS = ["none", "typewriter", "word-pop", "word-slide", "karaoke",
+  "letter-pop", "wave", "bounce", "shake"];
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "lighter", "soft-light",
   "hard-light", "color-dodge", "darken", "lighten", "difference"];
 /* Named looks. % props multiply against the clip's own value, additive props add. */
@@ -84,6 +91,7 @@ const WAVE_PEAKS_PER_SEC = 50;
 const project = {
   name: "Untitled Project",
   width: 1280, height: 720, fps: 30,
+  background: "#000000",
   revision: 0,
   media: [],   // {id, name, kind:'video'|'audio'|'image', src, duration, width?, height?}
   clips: [],   // {id, mediaId, kind, track, start, in, duration, name, props:{}}
@@ -150,6 +158,55 @@ function projDur() {
 }
 const trackOf = (c) => TRACKS.find((t) => t.id === c.track);
 const clipSpeed = (c) => clamp(+(c.props?.speed) || 1, 0.1, 8);
+
+/* ── Speed ramps (time remapping) ──
+   `speed` is keyframable: media time = in + ∫ speed(t) dt over the clip.
+   The integral is sampled once per unique speed curve and cached. */
+const speedIntCache = new Map(); // clipId -> {key, cum: Float32Array, step}
+function kfChannel(c, key, local, fallback) {
+  const kfs = c.keyframes?.[key];
+  if (!Array.isArray(kfs) || !kfs.length) return fallback;
+  if (local <= kfs[0].t) return kfs[0].v;
+  if (local >= kfs[kfs.length - 1].t) return kfs[kfs.length - 1].v;
+  for (let i = 0; i < kfs.length - 1; i++) {
+    const a = kfs[i], b = kfs[i + 1];
+    if (local >= a.t && local <= b.t) {
+      const u = (local - a.t) / Math.max(1e-6, b.t - a.t);
+      const ez = EASE[b.ease || "ease-in-out"] || EASE.linear;
+      return a.v + (b.v - a.v) * ez(u);
+    }
+  }
+  return fallback;
+}
+function hasSpeedRamp(c) {
+  return Array.isArray(c.keyframes?.speed) && c.keyframes.speed.length > 0;
+}
+function mediaTimeAt(c, t) {
+  const base = clipSpeed(c);
+  const local = clamp(t - c.start, 0, c.duration);
+  if (!hasSpeedRamp(c)) return c.in + local * base;
+  const key = JSON.stringify(c.keyframes.speed) + "|" + c.duration.toFixed(4) + "|" + base;
+  let e = speedIntCache.get(c.id);
+  if (!e || e.key !== key) {
+    const step = 1 / 120;
+    const n = Math.max(2, Math.ceil(c.duration / step) + 1);
+    const cum = new Float32Array(n);
+    let prev = clamp(kfChannel(c, "speed", 0, base), 0.1, 8);
+    for (let i = 1; i < n; i++) {
+      const lt = Math.min(c.duration, i * step);
+      const cur = clamp(kfChannel(c, "speed", lt, base), 0.1, 8);
+      cum[i] = cum[i - 1] + ((prev + cur) / 2) * (lt - (i - 1) * step);
+      prev = cur;
+    }
+    e = { key, cum, step };
+    speedIntCache.set(c.id, e);
+  }
+  const idx = Math.min(e.cum.length - 1, local / e.step);
+  const i0 = Math.floor(idx), frac = idx - i0;
+  const v = i0 >= e.cum.length - 1 ? e.cum[e.cum.length - 1]
+          : e.cum[i0] + (e.cum[i0 + 1] - e.cum[i0]) * frac;
+  return c.in + v;
+}
 let toastTimer = null;
 function toast(msg) {
   if (!els.toast) return;
@@ -181,6 +238,7 @@ function applyProject(data) {
   Object.assign(project, {
     name: data.name || "Untitled Project",
     width: data.width || 1280, height: data.height || 720, fps: data.fps || 30,
+    background: data.background || "#000000",
     revision: data.revision || 0,
     media: data.media || [], clips: data.clips || [],
     markers: (data.markers || []).filter((m) => m && isFinite(m.t)).sort((a, b) => a.t - b.t),
@@ -213,9 +271,9 @@ function scheduleSave() {
   }, 400);
 }
 function projectJSON() {
-  const { name, width, height, fps, revision, media, clips, markers } = project;
+  const { name, width, height, fps, background, revision, media, clips, markers } = project;
   return {
-    name, width, height, fps, revision,
+    name, width, height, fps, background, revision,
     media: media.filter((m) => !m.transient).map(({ id, name, kind, src, duration, width, height }) =>
       ({ id, name, kind, src, duration, width, height })),
     clips: clips.map(({ id, mediaId, kind, track, start, in: inn, duration, name, props, keyframes, transitionIn, transitionOut }) =>
@@ -563,6 +621,16 @@ function addTitle() {
   project.clips.push(c);
   selectClip(c.id); scheduleSave();
 }
+function addAdjust() {
+  pushUndo();
+  const c = {
+    id: "c_" + uid(), mediaId: null, kind: "adjust", track: "V3",
+    start: state.time, in: 0, duration: 4, name: "Adjust",
+    props: { ...DEFAULT_PROPS },
+  };
+  project.clips.push(c);
+  selectClip(c.id); scheduleSave();
+}
 function deleteSelected() {
   const c = getClip(state.selId);
   if (!c) return;
@@ -657,7 +725,8 @@ function rebuildClips() {
     const badge = (c.keyframes && Object.keys(c.keyframes).length ? "◆ " : "") +
                   (c.transitionIn || c.transitionOut ? "⇄ " : "");
     inner += `<div class="fade"></div>
-      <div class="clip-label">${badge}${c.kind === "text" ? "T · " + (c.props.text || "").split("\n")[0] : c.name}</div>
+      <div class="clip-label">${badge}${c.kind === "text" ? "T · " + (c.props.text || "").split("\n")[0]
+        : c.kind === "adjust" ? "FX · " + c.name : c.name}</div>
       <div class="handle l"></div><div class="handle r"></div>`;
     div.innerHTML = inner;
     if (hasWave) div.classList.add("has-wave");
@@ -679,7 +748,7 @@ function drawClipWave(cv, c, trackH) {
   g.globalAlpha = 0.75;
   const mid = h / 2;
   for (let x = 0; x < w; x++) {
-    const t = c.in + (x / w) * c.duration * clipSpeed(c);
+    const t = mediaTimeAt(c, c.start + (x / w) * c.duration);
     const v = peaks[Math.min(peaks.length - 1, Math.floor(t * WAVE_PEAKS_PER_SEC))] || 0;
     const bh = Math.max(1, v * (h - 2));
     g.fillRect(x, mid - bh / 2, 1, bh);
@@ -972,7 +1041,11 @@ function renderInspector(lite) {
   const sel = (label, k, opts, cur) => row(label,
     `<select data-k="${k}">${opts.map((o) => `<option value="${o}" ${String(o) === String(cur) ? "selected" : ""}>${o}</option>`).join("")}</select>`);
   const check = (label, k, on) => row(label, `<input type="checkbox" data-k="${k}" ${on ? "checked" : ""}>`);
-  if (c.kind !== "audio") {
+  if (c.kind === "adjust") {
+    html += `<div class="insp-section"><h3>Adjustment layer</h3>
+      ${slider("opacity", 0, 1, 0.01, p.opacity)}
+    </div>`;
+  } else if (c.kind !== "audio") {
     html += `<div class="insp-section"><h3>Transform</h3>
       ${row("Position X", `<input type="number" data-k="x" value="${p.x}">`, "x")}
       ${row("Position Y", `<input type="number" data-k="y" value="${p.y}">`, "y")}
@@ -994,7 +1067,7 @@ function renderInspector(lite) {
       ${check("Flip V", "flipV", p.flipV)}
     </div>`;
   }
-  if (c.kind === "video" || c.kind === "image" || c.kind === "svg") {
+  if (c.kind === "video" || c.kind === "image" || c.kind === "svg" || c.kind === "adjust") {
     html += `<div class="insp-section"><h3>Filter / Color</h3>
       ${sel("Preset", "filterPreset", Object.keys(FILTER_PRESETS), p.filterPreset)}
       ${slider("brightness", 0, 200, 1, p.brightness, "%")}
@@ -1008,6 +1081,12 @@ function renderInspector(lite) {
       ${slider("sepia", 0, 100, 1, p.sepia, "%")}
       ${slider("invert", 0, 100, 1, p.invert, "%")}
       ${slider("vignette", 0, 100, 1, p.vignette, "%")}
+    </div>
+    <div class="insp-section"><h3>Motion FX</h3>
+      ${slider("shake", 0, 40, 0.5, p.shake, "px")}
+      ${slider("shakeSpeed", 1, 30, 0.5, p.shakeSpeed)}
+      ${slider("rgbSplit", 0, 30, 0.5, p.rgbSplit, "px")}
+      ${slider("grain", 0, 100, 1, p.grain, "%")}
     </div>`;
   }
   if (c.kind === "video" || c.kind === "image") {
@@ -1066,6 +1145,9 @@ function renderInspector(lite) {
       ${row("Bg color", `<input type="color" data-k="bgColor" value="${p.bgColor}">`)}
       ${slider("bgOpacity", 0, 1, 0.05, p.bgOpacity)}
       ${slider("textShadow", 0, 40, 1, p.textShadow)}
+      ${slider("glow", 0, 100, 1, p.glow)}
+      ${row("Glow color", `<input type="color" data-k="glowColor" value="${p.glowColor || p.color}">
+        <button class="btn tiny${p.glowColor ? "" : " toggle on"}" data-action="glow-auto" title="Glow uses the text color">auto</button>`)}
     </div>
     <div class="insp-section"><h3>Caption animation</h3>
       ${row("Style", `<select data-k="textAnim">${TEXT_ANIMS.map((a) => `<option ${a === p.textAnim ? "selected" : ""}>${a}</option>`).join("")}</select>`)}
@@ -1107,6 +1189,7 @@ function renderInspector(lite) {
       pushUndo();
       if (a === "keyoff") c.props.chromaKey = "";
       else if (a === "grad-off") c.props.color2 = "";
+      else if (a === "glow-auto") c.props.glowColor = "";
       else if (a === "gfont-load") {
         const name = els.inspector.querySelector("[data-gfont]")?.value.trim();
         if (!name) return;
@@ -1209,15 +1292,16 @@ function activeAt(c, t) { return t >= c.start && t < clipEnd(c); }
 function syncMedia() {
   const t = state.time;
   for (const c of project.clips) {
-    if (c.kind === "text" || c.kind === "image" || c.kind === "svg") continue;
+    if (c.kind === "text" || c.kind === "image" || c.kind === "svg" || c.kind === "adjust") continue;
     const el = getClipEl(c); if (!el) continue;
-    const sp = clipSpeed(c);
-    const mt = c.in + (t - c.start) * sp;
+    const p = evalProps(c, t);
+    const sp = clamp(+p.speed || 1, 0.1, 8);
+    const mt = mediaTimeAt(c, t);
     if (state.playing && activeAt(c, t)) {
       if (el.playbackRate !== sp) { try { el.playbackRate = sp; } catch {} }
       if (el.paused) el.play().catch(() => {});
       if (Math.abs(el.currentTime - mt) > 0.25 * sp) { try { el.currentTime = mt; } catch {} }
-      const vol = clamp(evalProps(c, t).volume, 0, 4);
+      const vol = clamp(p.volume, 0, 4);
       const g = runtime.clipGain.get(c.id);
       if (g) g.gain.value = vol;
       else el.volume = clamp(vol, 0, 1);
@@ -1233,7 +1317,7 @@ function seekMediaWhilePaused() {
     if (c.kind !== "video") continue;
     if (!activeAt(c, t)) continue;
     const el = getClipEl(c); if (!el) continue;
-    const mt = c.in + (t - c.start) * clipSpeed(c);
+    const mt = mediaTimeAt(c, t);
     if (Math.abs(el.currentTime - mt) > 0.04) { try { el.currentTime = mt; } catch {} }
   }
 }
@@ -1317,6 +1401,17 @@ function applyTransition(p, type, k, W, H, dir) {
     case "whip":
       p.x = (+p.x || 0) - dir * EASE["ease-in"](k) * W * 1.4;
       p.blur = (+p.blur || 0) + k * 16; break;
+    case "glitch": { // RGB split + horizontal jitter, deterministic
+      const j = Math.sin(k * 61.7) * Math.sin(k * 23.3);
+      p.rgbSplit = (+p.rgbSplit || 0) + k * 14;
+      p.x = (+p.x || 0) + j * k * W * 0.06;
+      p.opacity *= 1 - k * k;
+      break;
+    }
+    case "pop": // overshoot scale (backOut) — sticker/caption entrance
+      p.scale = (+p.scale || 1) * Math.max(0.001, backOut(1 - k));
+      p.opacity *= Math.min(1, (1 - k) * 2.5);
+      break;
   }
 }
 /* Rebase clip-local keyframe times by -offset, dropping ones outside [0, dur] */
@@ -1379,7 +1474,7 @@ function getSvgImage(c, t) {
   const aux = runtime.mediaAux.get(c.mediaId);
   if (!aux || !aux.svgText) return null;
   if (!aux.svgAnimated) return aux.img || null;
-  const local = Math.max(0, c.in + (t - c.start) * clipSpeed(c));
+  const local = Math.max(0, mediaTimeAt(c, t));
   const q = Math.round(local * project.fps) / project.fps;
   const hit = aux.svgFrames.get(q);
   if (hit) return hit;
@@ -1397,7 +1492,7 @@ async function prepareSvgFrame(c, t) {
   if (!aux) return;
   if (!aux.svgText) { try { await loadSvgMedia(getMedia(c.mediaId)); } catch { return; } }
   if (!aux.svgAnimated) return;
-  const local = Math.max(0, c.in + (t - c.start) * clipSpeed(c));
+  const local = Math.max(0, mediaTimeAt(c, t));
   const q = Math.round(local * project.fps) / project.fps;
   if (aux.svgFrames.get(q)) return;
   try {
@@ -1465,8 +1560,75 @@ function requestMask(clipId, el, force = false) {
    resolution (capped), applies the mask + one pixel loop, hands back a canvas. */
 const scratch = document.createElement("canvas");
 const scratchCtx = scratch.getContext("2d", { willReadFrequently: true });
+/* film-grain tile, generated once */
+let grainTile = null;
+function getGrainTile() {
+  if (grainTile) return grainTile;
+  grainTile = document.createElement("canvas");
+  grainTile.width = grainTile.height = 256;
+  const g = grainTile.getContext("2d");
+  const img = g.createImageData(256, 256);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = 90 + Math.random() * 130;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+    img.data[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  return grainTile;
+}
+/* Draw a tiled grain overlay over a rect in the CURRENT transform space.
+   Phase jumps per frame so grain "boils" like film. */
+function drawGrain(amount, x, y, w, h, t) {
+  const keepA = ctx2d.globalAlpha, keepC = ctx2d.globalCompositeOperation;
+  const off = (Math.floor(t * project.fps) * 7919) % 256;
+  ctx2d.globalCompositeOperation = "overlay";
+  ctx2d.globalAlpha = keepA * clamp(amount / 100, 0, 1) * 0.55;
+  ctx2d.save();
+  ctx2d.translate(-off, off);
+  ctx2d.fillStyle = ctx2d.createPattern(getGrainTile(), "repeat");
+  ctx2d.fillRect(x + off, y - off, w, h);
+  ctx2d.restore();
+  ctx2d.globalAlpha = keepA;
+  ctx2d.globalCompositeOperation = keepC;
+}
+/* Adjustment layers: snapshot everything drawn so far, re-draw it through this
+   clip's filter stack (Premiere-style). */
+const adjScratch = document.createElement("canvas");
+function drawAdjust(c, W, H, t) {
+  const p = evalProps(c, t);
+  if (adjScratch.width !== W) adjScratch.width = W;
+  if (adjScratch.height !== H) adjScratch.height = H;
+  const a = adjScratch.getContext("2d");
+  a.clearRect(0, 0, W, H);
+  a.drawImage(els.preview, 0, 0);
+  ctx2d.save();
+  ctx2d.setTransform(1, 0, 0, 1, 0, 0);
+  if (p.shake > 0) { // whole-frame impact shake
+    const s = +p.shake, tt = t * clamp(+p.shakeSpeed || 8, 0.5, 40) * Math.PI * 2;
+    ctx2d.translate(
+      Math.sin(tt * 1.3) * s * 0.6 + Math.sin(tt * 2.71) * s * 0.4,
+      Math.cos(tt * 1.7) * s * 0.5 + Math.sin(tt * 3.13) * s * 0.35);
+  }
+  ctx2d.globalAlpha = clamp(p.opacity, 0, 1);
+  ctx2d.filter = buildFilter(p);
+  let src = adjScratch;
+  if (p.temperature || p.tint || p.rgbSplit > 0)
+    src = pixelPass(c, { ...p, chromaKey: "", bgRemove: false }, adjScratch, 0, 0, W, H, W, H);
+  ctx2d.drawImage(src, 0, 0, src.width, src.height, 0, 0, W, H);
+  ctx2d.filter = "none";
+  if (p.vignette > 0) {
+    const g = ctx2d.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.hypot(W, H) * 0.55);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, `rgba(0,0,0,${clamp(p.vignette / 100, 0, 1) * 0.9})`);
+    ctx2d.fillStyle = g;
+    ctx2d.fillRect(0, 0, W, H);
+  }
+  if (p.grain > 0) drawGrain(p.grain, 0, 0, W, H, t);
+  ctx2d.restore();
+}
 function needsPixelPass(p, c) {
-  return !!(p.chromaKey || p.temperature || p.tint || (p.bgRemove && bgSeg.masks.get(c.id)));
+  return !!(p.chromaKey || p.temperature || p.tint || p.rgbSplit > 0 ||
+            (p.bgRemove && bgSeg.masks.get(c.id)));
 }
 function hexToRgb(hex) {
   const n = parseInt(String(hex).replace("#", ""), 16) || 0;
@@ -1486,9 +1648,21 @@ function pixelPass(c, p, src, sx, sy, sw, sh, dw, dh) {
     scratchCtx.globalCompositeOperation = "source-over";
   }
   const doKey = !!p.chromaKey, temp = +p.temperature || 0, tint = +p.tint || 0;
-  if (doKey || temp || tint) {
+  const split = Math.round(clamp(+p.rgbSplit || 0, 0, 60) * (w / Math.max(1, dw)));
+  if (doKey || temp || tint || split > 0) {
     const img = scratchCtx.getImageData(0, 0, w, h);
     const d = img.data;
+    if (split > 0) { // chromatic aberration: shift R left→, B →right
+      const src2 = new Uint8ClampedArray(d);
+      for (let y = 0; y < h; y++) {
+        const rowOff = y * w * 4;
+        for (let x = 0; x < w; x++) {
+          const i = rowOff + x * 4;
+          d[i] = src2[rowOff + Math.min(w - 1, x + split) * 4];
+          d[i + 2] = src2[rowOff + Math.max(0, x - split) * 4 + 2];
+        }
+      }
+    }
     let kcb = 0, kcr = 0, t0 = 0, t1 = 1;
     if (doKey) {
       const [kr, kg, kb] = hexToRgb(p.chromaKey);
@@ -1539,7 +1713,7 @@ function drawFrame(t = state.time) {
   const W = els.preview.width, H = els.preview.height;
   ctx2d.setTransform(1, 0, 0, 1, 0, 0);
   ctx2d.filter = "none"; ctx2d.globalAlpha = 1;
-  ctx2d.fillStyle = "#000"; ctx2d.fillRect(0, 0, W, H);
+  ctx2d.fillStyle = project.background || "#000"; ctx2d.fillRect(0, 0, W, H);
   // render video tracks bottom-up (V1 under V2)
   const videoTracks = TRACKS.filter((tr) => tr.kind === "video").reverse();
   for (const tr of videoTracks) {
@@ -1550,6 +1724,7 @@ function drawFrame(t = state.time) {
   }
 }
 function drawClip(c, W, H, t) {
+  if (c.kind === "adjust") { drawAdjust(c, W, H, t); return; }
   const p = evalProps(c, t);
   ctx2d.save();
   if (p._wipe) {
@@ -1571,6 +1746,13 @@ function drawClip(c, W, H, t) {
     ctx2d.globalCompositeOperation = p.blend === "normal" ? "source-over" : p.blend;
   ctx2d.translate(W / 2 + (+p.x || 0), H / 2 + (+p.y || 0));
   ctx2d.rotate((p.rotation || 0) * Math.PI / 180);
+  if (p.shake > 0) { // deterministic multi-sine handheld/impact shake
+    const a = +p.shake, tt = t * clamp(+p.shakeSpeed || 8, 0.5, 40) * Math.PI * 2;
+    ctx2d.translate(
+      Math.sin(tt * 1.3) * a * 0.6 + Math.sin(tt * 2.71) * a * 0.4,
+      Math.cos(tt * 1.7) * a * 0.5 + Math.sin(tt * 3.13) * a * 0.35);
+    ctx2d.rotate(Math.sin(tt * 0.9) * a * 0.0022);
+  }
   if (c.kind === "text") {
     drawText(c, p, t - c.start);
     ctx2d.restore();
@@ -1623,6 +1805,7 @@ function drawClip(c, W, H, t) {
       ctx2d.fillStyle = g;
       ctx2d.fillRect(-dw / 2, -dh / 2, dw, dh);
     }
+    if (p.grain > 0) drawGrain(p.grain, -dw / 2, -dh / 2, dw, dh, t);
   }
   ctx2d.restore();
 }
@@ -1687,11 +1870,20 @@ function drawText(c, p, local) {
       ctx2d.strokeStyle = p.strokeColor || "#000";
       ctx2d.strokeText(str, x, y);
     }
-    if (shadowBlur > 0) {
+    if (p.glow > 0) { // neon: colored halo, double-fill for intensity
+      ctx2d.shadowColor = p.glowColor || p.color || "#fff";
+      ctx2d.shadowBlur = (+p.glow) * size / 40;
+      ctx2d.fillStyle = fillFor(y);
+      ctx2d.fillText(str, x, y);
+      ctx2d.fillText(str, x, y);
+    } else if (shadowBlur > 0) {
       ctx2d.shadowColor = "rgba(0,0,0,.7)"; ctx2d.shadowBlur = shadowBlur; ctx2d.shadowOffsetY = shadowBlur / 3;
+      ctx2d.fillStyle = fillFor(y);
+      ctx2d.fillText(str, x, y);
+    } else {
+      ctx2d.fillStyle = fillFor(y);
+      ctx2d.fillText(str, x, y);
     }
-    ctx2d.fillStyle = fillFor(y);
-    ctx2d.fillText(str, x, y);
     ctx2d.shadowColor = "transparent"; ctx2d.shadowBlur = 0; ctx2d.shadowOffsetY = 0;
     ctx2d.globalAlpha = keep;
   };
@@ -1708,6 +1900,39 @@ function drawText(c, p, local) {
       const shown = ln.slice(0, Math.max(0, budget));
       budget -= ln.length;
       if (shown) paint(shown, lineCx(i) - (lineWidths[i] - ctx2d.measureText(shown).width) / 2, y0 + i * lh);
+    });
+    return;
+  }
+  // per-character animations (TikTok style)
+  if (anim === "letter-pop" || anim === "wave") {
+    ctx2d.textAlign = "center";
+    let ci = 0;
+    rawLines.forEach((ln, i) => {
+      const y = y0 + i * lh;
+      const chars = [...ln];
+      const widths = chars.map((ch) => ctx2d.measureText(ch).width);
+      const total = widths.reduce((a, b) => a + b, 0);
+      let x = lineCx(i) - total / 2;
+      chars.forEach((ch, j) => {
+        const cx = x + widths[j] / 2;
+        if (ch.trim()) {
+          if (anim === "letter-pop") {
+            const u = clamp((local - ci * rate / 3) / 0.18, 0, 1);
+            if (u > 0) {
+              ctx2d.save();
+              ctx2d.translate(cx, y);
+              const s = Math.max(0.001, backOut(u));
+              ctx2d.scale(s, s);
+              paint(ch, 0, 0, Math.min(1, u * 2.5));
+              ctx2d.restore();
+            }
+          } else { // wave: continuous per-character sine ride
+            paint(ch, cx, y + Math.sin(local * 4 + ci * 0.55) * size * 0.12);
+          }
+          ci++;
+        }
+        x += widths[j];
+      });
     });
     return;
   }
@@ -1735,6 +1960,11 @@ function drawText(c, p, local) {
         }
       } else if (anim === "word-slide") {
         if (u > 0) paint(word, cx, y + (1 - EASE["ease-out"](u)) * size * 0.7, u);
+      } else if (anim === "bounce") { // continuous per-word hop
+        paint(word, cx, y - Math.abs(Math.sin(local * 3.2 + wi * 0.9)) * size * 0.18);
+      } else if (anim === "shake") { // continuous nervous jitter
+        paint(word, cx + Math.sin(local * 31 + wi * 7.3) * size * 0.035,
+                    y + Math.cos(local * 27 + wi * 3.1) * size * 0.035);
       } else { // karaoke: everything visible dim, spoken words at full strength
         paint(word, cx, y, u >= 1 ? 1 : 0.3 + u * 0.7);
       }
@@ -1847,7 +2077,7 @@ function seekVideosTo(t) {
     if (c.kind !== "video") continue;
     const el = getClipEl(c); if (!el) continue;
     if (!activeAt(c, t)) { if (!el.paused) el.pause(); continue; }
-    const mt = c.in + (t - c.start) * clipSpeed(c);
+    const mt = mediaTimeAt(c, t);
     if (Math.abs(el.currentTime - mt) < 1e-4 && el.readyState >= 2) continue;
     waits.push(new Promise((res) => {
       const done = () => { clearTimeout(tm); el.removeEventListener("seeked", done); res(); };
@@ -1890,8 +2120,6 @@ async function renderAudioMix(dur) {
   const off = new OfflineAudioContext(2, Math.ceil(dur * sr) + 1, sr);
   for (const { c, buf } of sources) {
     const src = off.createBufferSource(); src.buffer = buf;
-    const sp = clipSpeed(c);
-    src.playbackRate.value = sp;
     const g = off.createGain();
     const n = Math.max(2, Math.ceil(c.duration * 30));
     const curve = new Float32Array(n);
@@ -1899,7 +2127,18 @@ async function renderAudioMix(dur) {
       curve[i] = clamp(evalProps(c, c.start + (i / (n - 1)) * c.duration).volume, 0, 4);
     g.gain.setValueCurveAtTime(curve, Math.max(0, c.start), Math.max(0.01, c.duration));
     src.connect(g); g.connect(off.destination);
-    src.start(Math.max(0, c.start), Math.max(0, c.in), c.duration * sp);
+    if (hasSpeedRamp(c)) {
+      const rc = new Float32Array(n);
+      for (let i = 0; i < n; i++)
+        rc[i] = clamp(kfChannel(c, "speed", (i / (n - 1)) * c.duration, clipSpeed(c)), 0.1, 8);
+      src.playbackRate.setValueCurveAtTime(rc, Math.max(0, c.start), Math.max(0.01, c.duration));
+      src.start(Math.max(0, c.start), Math.max(0, c.in));
+      src.stop(Math.max(0, c.start) + c.duration);
+    } else {
+      const sp = clipSpeed(c);
+      src.playbackRate.value = sp;
+      src.start(Math.max(0, c.start), Math.max(0, c.in), c.duration * sp);
+    }
   }
   return encodeWAV(await off.startRendering());
 }
@@ -2028,6 +2267,7 @@ function finishExport(keep) {
 $("btnImport").addEventListener("click", () => els.fileInput.click());
 els.fileInput.addEventListener("change", () => { importFiles(els.fileInput.files); els.fileInput.value = ""; });
 $("btnTitle").addEventListener("click", addTitle);
+$("btnAdjust").addEventListener("click", addAdjust);
 $("btnSplit").addEventListener("click", splitAtPlayhead);
 $("btnDelete").addEventListener("click", deleteSelected);
 $("btnExport").addEventListener("click", openExportSetup);

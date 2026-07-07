@@ -111,6 +111,7 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 {
   "name": "My Edit",
   "width": 1280, "height": 720, "fps": 30,   // canvas/export settings
+  "background": "#000000",                    // canvas color behind all clips (optional)
   "revision": 7,                              // bump on every write!
   "markers": [ { "t": 2.5 }, { "t": 5.0, "label": "drop" } ],
   // ^ beat/cue markers: gold diamonds on the ruler, snap targets for clip edges.
@@ -122,8 +123,8 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
   "clips": [
     {
       "id": "c_xyz",             // unique string
-      "mediaId": "m_abc",        // null for kind:"text"
-      "kind": "video",           // video | audio | image | svg | text
+      "mediaId": "m_abc",        // null for kind:"text" and kind:"adjust"
+      "kind": "video",           // video | audio | image | svg | text | adjust
       "track": "V1",             // V4 V3 V2 V1 (top→bottom video) | A1 A2 A3 (audio)
       "start": 0,                // timeline position, seconds
       "in": 2.5,                 // offset into source media, seconds (0 for image/svg/text)
@@ -175,6 +176,14 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 | `blur` | 0 | px |
 | `grayscale` `sepia` `invert` `vignette` | 0 | % |
 
+**Motion FX** (video/image/svg/adjust — all animatable):
+| prop | default | notes |
+|---|---|---|
+| `shake` | 0 | camera-shake amplitude in px (deterministic — identical in export) |
+| `shakeSpeed` | 8 | shake frequency |
+| `rgbSplit` | 0 | chromatic aberration / RGB channel split, px |
+| `grain` | 0 | animated film grain, % |
+
 **Keying / cut-out** (video/image):
 | prop | default | notes |
 |---|---|---|
@@ -187,7 +196,7 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 | prop | default | notes |
 |---|---|---|
 | `volume` | 1 | 0–2 |
-| `speed` | 1 | 0.25–4× playback rate. Source window consumed = `duration × speed`, so `in + duration×speed ≤ media.duration`. |
+| `speed` | 1 | 0.25–4× playback rate. **Keyframable → speed ramps**: with `keyframes.speed` the engine time-remaps (media time = `in` + ∫speed dt), in preview and in the export audio mix. Static case: source window consumed = `duration × speed`, so `in + duration×speed ≤ media.duration`. |
 
 **Text clips only:**
 | prop | default | notes |
@@ -203,17 +212,29 @@ Examples in `library/svg/`: `sparkles.svg` (loop), `lower-third.svg`,
 | `letterSpacing` | 0 | px |
 | `lineHeight` | 1.2 | multiplier |
 | `textShadow` | 12 | soft drop shadow amount, 0 = off |
+| `glow` | 0 | neon glow strength (0–100); replaces the drop shadow |
+| `glowColor` | "" | glow color ("" = use the text color) |
 | `strokeWidth` `strokeColor` | 0, "#000" | text outline |
 | `bgColor` `bgOpacity` | "#000", 0 | rounded pill behind each line |
-| `textAnim` | "none" | typewriter · word-pop · word-slide · karaoke |
-| `wordRate` | 0.15 | seconds per word (typewriter: /4 per character) |
+| `textAnim` | "none" | typewriter · word-pop · word-slide · karaoke · **letter-pop** (per-character entrance) · **wave** (looping per-character ride) · **bounce** (looping per-word hop) · **shake** (looping jitter) |
+| `wordRate` | 0.15 | seconds per word (typewriter: /4, letter-pop: /3 per character) |
+
+**Adjustment layers** (`kind:"adjust"`, `mediaId:null`): a clip that re-renders
+everything drawn *below* it (lower tracks + earlier clips) through its own
+filter stack — Premiere-style. Supports all Filter/Color props, vignette,
+grain, rgbSplit, temperature/tint, whole-frame `shake`, and `opacity` as the
+intensity. Keyframe/transition it like any clip. Put it on V3/V4 above the
+footage. Example: 0.3 s impact shake over everything =
+`{kind:"adjust", track:"V4", duration:0.3, props:{shake:18}}`.
 
 **Animatable props** (usable in `keyframes`): x, y, scale, rotation, opacity,
-volume, brightness, contrast, saturation, hue, blur, grayscale, sepia, invert,
-temperature, tint, vignette, cornerRadius, fontSize, letterSpacing.
+volume, speed, brightness, contrast, saturation, hue, blur, grayscale, sepia,
+invert, temperature, tint, vignette, cornerRadius, shake, rgbSplit, grain,
+fontSize, letterSpacing, glow.
 
 **Transition types**: fade · slide-left/right/up/down · zoom · wipe (=wipe-left)
-· wipe-right/up/down · iris (circular) · spin · blur · whip (whip-pan).
+· wipe-right/up/down · iris (circular) · spin · blur · whip (whip-pan) ·
+glitch (RGB split + jitter) · pop (overshoot scale — stickers/captions).
 
 ### Semantics
 
@@ -277,6 +298,28 @@ background footage on V1.
 
 **Slow motion / timelapse**: `props.speed: 0.5` (half speed) or `4` (4×).
 Remember the source window is `duration × speed`.
+
+**Speed ramp** (the reel move — fast into slow on the beat):
+`keyframes: { speed: [ {t:0, v:3}, {t:1.1, v:3}, {t:1.3, v:0.4, "ease":"ease-out"} ] }`
+— sync the drop (t:1.3) to a marker; add `transitionIn:{type:"whip",duration:0.2}` before it.
+
+**Impact hit**: adjustment layer, 0.25–0.4 s at the hit:
+`{kind:"adjust", track:"V4", props:{shake:20, rgbSplit:8}}` + `impact-hit.mp3`
+from `library/sfx` on A2.
+
+**VHS / glitch look**: `props: {rgbSplit:4, grain:35, saturation:120}` +
+`library/elements/vhs-scanlines.svg` on V4 with `blend:"soft-light", fit:"stretch"`.
+Cut between shots with `transitionIn:{type:"glitch",duration:0.3}`.
+
+**Film look**: adjustment layer across the whole edit:
+`props: {filterPreset:"cinematic", grain:18}` — one clip grades every shot.
+
+**Neon caption**: `props: {glow:60, glowColor:"#22d3ee", color:"#ffffff",
+font:"Bebas Neue", textAnim:"wave"}` on a dark shot.
+
+**Light leak accent**: `library/elements/light-leak-warm.svg` on V4,
+`props:{blend:"screen", fit:"cover", opacity:0.7}`, 1–2 s at scene changes,
+`transitionIn/Out: fade`.
 
 **Light-leak / dust overlay**: element from `library/elements` on V4 with
 `props: {blend:"screen", opacity:0.6, fit:"cover"}`.

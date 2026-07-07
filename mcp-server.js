@@ -136,7 +136,7 @@ async function callTool(name, args) {
       for (const c of doc.clips) {
         if (!c.id || !c.track || typeof c.start !== "number" || typeof c.duration !== "number")
           throw new Error(`clip ${c.id || "?"} needs id, track, numeric start and duration`);
-        if (c.kind !== "text" && !doc.media.some((m) => m.id === c.mediaId))
+        if (c.kind !== "text" && c.kind !== "adjust" && !doc.media.some((m) => m.id === c.mediaId))
           throw new Error(`clip ${c.id} references unknown mediaId ${c.mediaId}`);
       }
       let cur = { revision: 0 };

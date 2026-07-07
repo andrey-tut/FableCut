@@ -31,20 +31,26 @@ same time.
 
 **Look**
 - 12 one-click filter presets (cinematic, teal-orange, noir, vintage, cyberpunk…)
+- **Adjustment layers** — one clip grades everything below it, Premiere-style
 - Full grade controls: brightness/contrast/saturation/hue, **temperature & tint**,
-  blur, grayscale/sepia/invert, **vignette**
+  blur, grayscale/sepia/invert, **vignette**, animated **film grain**
 - Blend modes (screen, multiply, overlay…), fit modes (contain/cover/stretch),
   per-edge cropping, corner radius, flip H/V
 - **Chroma key** (green screen) with tolerance/softness + spill suppression
 - **AI background removal** (person cut-out, in-browser via MediaPipe)
 
 **Motion**
-- Keyframe animation on ~20 properties with easing
-- 15 transitions: fades, slides, wipes (4 directions), zoom, iris, spin, blur, whip-pan
-- Per-clip speed control (0.25×–4×, audio pitch-correct mix on export)
+- Keyframe animation on ~25 properties with easing
+- **Speed ramps** — keyframe `speed` and the engine time-remaps video *and* the
+  export audio mix (the fast-into-slow-mo reel move)
+- **Camera shake** and **RGB-split/chromatic aberration**, both animatable
+- 17 transitions: fades, slides, wipes (4 directions), zoom, iris, spin, blur,
+  whip-pan, **glitch**, **pop**
 
 **Text**
-- Kinetic captions: typewriter, word-pop, word-slide, karaoke
+- Kinetic captions: typewriter, word-pop, word-slide, karaoke, **letter-pop**,
+  **wave**, **bounce**, **shake**
+- **Neon glow** for that TikTok caption look
 - Font editor: system fonts, drop-in custom fonts (`library/fonts/`), and **any
   Google Font by name** — loaded automatically
 - Gradient fills, outline, background pills, letter-spacing, line-height,
