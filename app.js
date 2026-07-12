@@ -245,6 +245,18 @@ function toast(msg) {
   toastTimer = setTimeout(() => els.toast.classList.remove("show"), 3200);
 }
 
+/* True when keyboard events should go to a text-entry control (not range/checkbox). */
+function isTypingTarget(el) {
+  if (!el || el === document.body || el === document.documentElement) return false;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT") {
+    const t = (el.type || "text").toLowerCase();
+    return !["range", "checkbox", "radio", "button", "submit", "reset", "color", "file", "hidden"].includes(t);
+  }
+  return !!el.isContentEditable;
+}
+
 /* ═══════════════════════ SERVER SYNC (optional) ═══════════════════════ */
 async function connectServer() {
   try {
@@ -899,6 +911,9 @@ function trackAtEvent(e) {
 
 els.tracksContent.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
+  // Clicking the timeline should release inspector text fields so shortcuts (z, s, …) work
+  if (isTypingTarget(document.activeElement) && els.inspector.contains(document.activeElement))
+    document.activeElement.blur();
   const clipDiv = e.target.closest(".clip");
   if (!clipDiv) {
     // empty track background: drag = marquee select, plain click = seek + deselect
@@ -1155,6 +1170,20 @@ function zoomToFit() {
   const span = Math.max(projDur() + TIMELINE_PAD_SEC, 1);
   setZoom(w / span);
   els.timelineScroll.scrollLeft = 0;
+}
+/* Zoom so the primary selected clip fills 90% of the timeline width and is centered. */
+function zoomToSelection() {
+  const c = getClip(state.selId) || selectedClips()[0];
+  if (!c) { toast("Select a clip to zoom to"); return; }
+  const w = els.timelineScroll.clientWidth || 800;
+  const dur = Math.max(c.duration, MIN_DUR);
+  const pps = clamp((0.9 * w) / dur, ZOOM_MIN, ZOOM_MAX);
+  state.pps = pps;
+  els.zoomSlider.value = pps;
+  rebuildClips();
+  const center = c.start + c.duration / 2;
+  const maxScroll = Math.max(0, contentWidth() - w);
+  els.timelineScroll.scrollLeft = clamp(center * pps - w / 2, 0, maxScroll);
 }
 els.zoomSlider.addEventListener("input", () => setZoom(+els.zoomSlider.value));
 $("btnZoomFit").addEventListener("click", zoomToFit);
@@ -2715,8 +2744,7 @@ function updateSafeOverlay() {
 }
 
 window.addEventListener("keydown", (e) => {
-  const tag = document.activeElement?.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (isTypingTarget(document.activeElement)) return;
   const k = e.key;
   if (k === " ") { e.preventDefault(); state.playing ? pause() : play(); }
   else if (k === "s" || k === "S") splitAtPlayhead();
@@ -2736,7 +2764,10 @@ window.addEventListener("keydown", (e) => {
   }
   else if (k === "+" || k === "=") setZoom(state.pps * 1.25);
   else if (k === "-") setZoom(state.pps / 1.25);
-  else if (k === "Z" && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); zoomToFit(); }
+  else if (e.code === "KeyZ" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    e.shiftKey ? zoomToFit() : zoomToSelection();
+  }
   else if ((e.ctrlKey || e.metaKey) && (k === "z" || k === "Z")) {
     e.preventDefault();
     e.shiftKey ? redo() : undo();
