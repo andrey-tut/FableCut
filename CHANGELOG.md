@@ -5,6 +5,20 @@ All notable changes to FableCut are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Resizable monitor/timeline split — drag the divider, double-click to reset (thanks @PlkMarudny, #14)
+- S/M/L timeline track-density presets with layout persistence (thanks @PlkMarudny, #15)
+- Zoom to selection (Z) now frames all selected clips (thanks @PlkMarudny, #13)
+- Title-style picker: each entry renders in its own typeface, and hovering an entry live-previews the style on the monitor (mouse away reverts, click commits)
+- Program-monitor hover cursors: the rotate knob shows a rotate cursor, corner handles show direction-aware resize arrows (correct even on rotated clips), and the clip body shows a move cursor
+
+### Fixed
+- Changing a title's style no longer resets its position/scale/rotation — style switches only restyle the look; placement applies to newly created titles only
+- Selection handles now clamp to the frame edge and stay visible/grabbable when a clip's box extends past the canvas
+- Header logo icon/text vertical alignment after the topbar layout change
+
 ## [1.5.0] - 2026-07-11
 
 ### Added

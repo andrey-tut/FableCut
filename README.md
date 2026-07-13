@@ -37,6 +37,8 @@ same time.
 - Beat & cue markers (tap <kbd>M</kbd> on the beat during playback) with edge snapping
 - Real decoded audio waveforms on clips
 - Canvas aspect presets (16:9, 9:16 reels, 4:5, 1:1) + safe-area guides
+- Resizable workspace: drag the divider between monitor and timeline (double-click resets), plus S/M/L timeline track-density presets (S hides thumbnails for compact tracks)
+- Zoom to selection (Z) frames all selected clips, not just one
 
 **Look**
 - 12 one-click filter presets (cinematic, teal-orange, noir, vintage, cyberpunk…)
