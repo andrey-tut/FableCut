@@ -22,4 +22,5 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-project-kesarix-backup-rev197.json
+project-kesarix-backup-rev197.json.env
+/media/
