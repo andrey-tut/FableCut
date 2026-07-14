@@ -148,29 +148,32 @@ function coerceClips(raw, n, maxDur) {
   return out.slice(0, n);
 }
 
-async function selectGemini(transcript, lang, n, maxDur) {
-  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: [{ parts: [{ text: selectPrompt(lang, n, transcript) }] }],
-      generationConfig: { response_mime_type: "application/json", temperature: 0.4 } }) });
-  if (!res.ok) die("Gemini HTTP " + res.status + ": " + (await res.text()).slice(0, 300));
-  const j = await res.json();
-  const txt = j.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-  return coerceClips(JSON.parse(txt), n, maxDur);
-}
-
-async function selectOpenAI(transcript, lang, n, maxDur) {
+// Універсальний JSON-виклик LLM (використовується і в plan.js, і в assemble.js).
+async function llmJSON(prompt, provider) {
+  if (provider === "gemini") {
+    const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { response_mime_type: "application/json", temperature: 0.4 } }) });
+    if (!res.ok) die("Gemini HTTP " + res.status + ": " + (await res.text()).slice(0, 300));
+    const j = await res.json();
+    return JSON.parse(j.candidates?.[0]?.content?.parts?.[0]?.text || "{}");
+  }
   const key = process.env.OPENAI_API_KEY;
   const model = process.env.OPENAI_MODEL || "gpt-4o";
   const res = await fetch("https://api.openai.com/v1/chat/completions",
     { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + key },
       body: JSON.stringify({ model, temperature: 0.4, response_format: { type: "json_object" },
-        messages: [{ role: "user", content: selectPrompt(lang, n, transcript) }] }) });
+        messages: [{ role: "user", content: prompt }] }) });
   if (!res.ok) die("OpenAI HTTP " + res.status + ": " + (await res.text()).slice(0, 300));
   const j = await res.json();
-  return coerceClips(JSON.parse(j.choices[0].message.content), n, maxDur);
+  return JSON.parse(j.choices[0].message.content);
+}
+
+async function selectMoments(transcript, lang, n, maxDur, provider) {
+  return coerceClips(await llmJSON(selectPrompt(lang, n, transcript), provider), n, maxDur);
 }
 
 /* ── 4. збірка project.json ───────────────────────────────────────────────── */
@@ -304,9 +307,7 @@ async function main() {
     ? (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY ? "gemini" : "openai")
     : args.select;
   const transcript = buildTranscriptText(segments, words);
-  const moments = selector === "gemini"
-    ? await selectGemini(transcript, args.lang, n, media.duration)
-    : await selectOpenAI(transcript, args.lang, n, media.duration);
+  const moments = await selectMoments(transcript, args.lang, n, media.duration, selector);
   if (!moments.length) die("модель не повернула моментів");
 
   console.log("\n── ПЛАН ──────────────────────────────────");
@@ -330,4 +331,5 @@ async function main() {
 }
 
 if (require.main === module) main().catch((e) => die(e.message || String(e)));
-module.exports = { PRESETS, buildProject, chunkWords, captionProps, ffprobe };
+module.exports = { PRESETS, buildProject, chunkWords, captionProps, ffprobe,
+  extractAudio, transcribe, buildTranscriptText, loadEnv, uid, llmJSON, die, log };
