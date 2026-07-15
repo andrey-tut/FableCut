@@ -27,11 +27,12 @@ const FONT = ["/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Ar
 
 function args(av) {
   const a = { out: path.join(ROOT, "exports", "recut.mp4"), segments: 0, music: "",
-    musicVol: 0.06, introDur: 2.4, keepTemp: false };
+    musicVol: 0.06, introDur: 2.4, keepTemp: false, clicks: "", zoomF: 1.28 };
   for (let i = 0; i < av.length; i++) { const x = av[i];
     if (x === "--out") a.out = av[++i]; else if (x === "--segments") a.segments = parseInt(av[++i], 10);
     else if (x === "--music") a.music = av[++i]; else if (x === "--music-vol") a.musicVol = parseFloat(av[++i]);
-    else if (x === "--intro-dur") a.introDur = parseFloat(av[++i]); else if (x === "--keep-temp") a.keepTemp = true; }
+    else if (x === "--intro-dur") a.introDur = parseFloat(av[++i]); else if (x === "--keep-temp") a.keepTemp = true;
+    else if (x === "--clicks") a.clicks = av[++i]; else if (x === "--zoom-factor") a.zoomF = parseFloat(av[++i]); }
   return a;
 }
 const ff = (aa, timeout = 3600000) => {
@@ -62,7 +63,30 @@ function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fcrender_"));
   const screen = resolveSrc(byId["m_screen"].src), webcam = resolveSrc(byId["m_webcam"].src), mic = resolveSrc(byId["m_mic"].src);
   const pipW = Math.round(W * 0.22), pipH = Math.round(H * 0.22);
-  console.log(`рендер ${runs.length} сегментів → ${a.out}`);
+
+  // авто-зум по кліках Screen Studio (mouseclicks-0.json): punch-in до точки кліку
+  let CLICKS = [];
+  if (a.clicks && fs.existsSync(a.clicks)) {
+    try { CLICKS = JSON.parse(fs.readFileSync(a.clicks, "utf8")).filter((e) => e.type === "mouseDown"); } catch {}
+  }
+  const spaceW = CLICKS.length ? Math.max(...CLICKS.map((c) => c.x)) : 1710;
+  const spaceH = CLICKS.length ? Math.max(...CLICKS.map((c) => c.y)) : 1067;
+  const sw0 = byId["m_screen"].width, sh0 = byId["m_screen"].height;
+  const cs = Math.min(W / sw0, H / sh0), dispW = sw0 * cs, dispH = sh0 * cs, offX = (W - dispW) / 2, offY = (H - dispH) / 2;
+  const even = (n) => Math.max(2, Math.round(n / 2) * 2);
+  function zoomFor(sc) {
+    if (!CLICKS.length || sc.duration < 1.0) return null;
+    const t0 = sc.in, t1 = sc.in + sc.duration * (sc.props.speed || 1);
+    const hit = CLICKS.filter((c) => c.processTimeMs / 1000 >= t0 && c.processTimeMs / 1000 <= t1);
+    if (!hit.length) return null;
+    const c = hit[hit.length - 1];
+    const cx = offX + (c.x / spaceW) * dispW, cy = offY + (c.y / spaceH) * dispH;
+    const Wc = even(W / a.zoomF), Hc = even(H / a.zoomF);
+    return { Wc, Hc,
+      x: Math.round(Math.min(Math.max(cx - Wc / 2, 0), W - Wc)),
+      y: Math.round(Math.min(Math.max(cy - Hc / 2, 0), H - Hc)) };
+  }
+  console.log(`рендер ${runs.length} сегментів → ${a.out}${CLICKS.length ? " (авто-зум: " + CLICKS.length + " кліків)" : ""}`);
 
   // 1. посегментний композит (екран contain + вебка PiP + голос, з прискоренням)
   const segFiles = [];
@@ -72,10 +96,13 @@ function main() {
     const sp = sc.props.speed || 1, win = (sc.duration * sp).toFixed(3);
     const px = Math.round(W / 2 + (cc ? cc.props.x : 0) - pipW / 2), py = Math.round(H / 2 + (cc ? cc.props.y : 0) - pipH / 2);
     const seg = path.join(tmp, `seg_${String(i).padStart(4, "0")}.mp4`);
+    const zc = zoomFor(sc);
+    const zoomChain = zc ? `;[bg]crop=${zc.Wc}:${zc.Hc}:${zc.x}:${zc.y},scale=${W}:${H},setsar=1[bgz]` : "";
+    const bgLabel = zc ? "bgz" : "bg";
     const fc =
-      `[0:v]setpts=PTS/${sp},scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1[bg];` +
+      `[0:v]setpts=PTS/${sp},scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1[bg]${zoomChain};` +
       `[1:v]setpts=PTS/${sp},scale=${pipW}:${pipH}:force_original_aspect_ratio=increase,crop=${pipW}:${pipH}[pip];` +
-      `[bg][pip]overlay=${px}:${py}[v];[2:a]atempo=${sp}[a]`;
+      `[${bgLabel}][pip]overlay=${px}:${py}[v];[2:a]atempo=${sp}[a]`;
     ff(["-ss", String(sc.in), "-t", win, "-i", screen, "-ss", String(cc ? cc.in : sc.in), "-t", win, "-i", webcam,
       "-ss", String(vc ? vc.in : sc.in), "-t", win, "-i", mic, "-filter_complex", fc,
       "-map", "[v]", "-map", "[a]", "-r", String(FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
