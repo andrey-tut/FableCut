@@ -126,11 +126,13 @@ function buildMultiProject(files, ordered, meta, preset, args) {
       // субтитри цього пробігу
       for (const line of P.chunkWords(run.words)) {
         const ls = line[0].start, le = line[line.length - 1].end;
+        const spans = line.map((w) => ({ w: w.text.trim(),
+          s: +Math.max(0, w.start - ls).toFixed(3), e: +(w.end - ls).toFixed(3) }));
         clips.push({ id: P.uid("c_"), mediaId: null, kind: "text", track: "V2",
           start: +(T + (ls - run.start)).toFixed(3), in: 0,
           duration: +Math.max(0.4, le - ls).toFixed(3), name: "cap",
           props: P.captionProps(preset, line.map((w) => w.text.trim()).join(" "),
-            +Math.max(0.08, (le - ls) / line.length).toFixed(3)) });
+            +Math.max(0.08, (le - ls) / line.length).toFixed(3), spans) });
       }
       T += dur;
       firstOfSeg = false;

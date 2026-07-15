@@ -191,16 +191,19 @@ function chunkWords(words) {
   return lines;
 }
 
-function captionProps(preset, text, wordRate) {
+function captionProps(preset, text, wordRate, wordSpans = null) {
   const y = Math.round(preset.h * preset.capY);
+  // реальна посинхронна підсвітка по whisper-таймкодах (режим "highlight" у рушії)
+  const sync = (wordSpans && wordSpans.length)
+    ? { textAnim: "highlight", words: wordSpans, highlightColor: "#ffd166" } : null;
   if (preset.cap === "reels") {
     return { text, font: preset.font, fontSize: preset.fontSize, color: "#ffffff",
       strokeWidth: 6, strokeColor: "#000000", bgColor: "#000000", bgOpacity: 0.35,
-      textAnim: preset.anim, wordRate, uppercase: true, align: "center", y };
+      textAnim: preset.anim, wordRate, uppercase: true, align: "center", y, ...(sync || {}) };
   }
   return { text, font: preset.font, fontSize: preset.fontSize, color: "#ffffff",
     strokeWidth: 3, strokeColor: "#000000", bgColor: "#000000", bgOpacity: 0.5,
-    textAnim: "none", align: "center", y };
+    textAnim: "none", align: "center", y, ...(sync || {}) };
 }
 
 function buildProject(media, moments, words, preset, args) {
@@ -235,9 +238,11 @@ function buildProject(media, moments, words, preset, args) {
       const ls = line[0].start, le = line[line.length - 1].end;
       const text = line.map((w) => w.text.trim()).join(" ");
       const wr = Math.max(0.08, (le - ls) / line.length);
+      const spans = line.map((w) => ({ w: w.text.trim(),
+        s: +Math.max(0, w.start - ls).toFixed(3), e: +(w.end - ls).toFixed(3) }));
       clips.push({ id: uid("c_"), mediaId: null, kind: "text", track: "V2",
         start: +(T + (ls - m.start)).toFixed(3), in: 0, duration: +Math.max(0.4, le - ls).toFixed(3),
-        name: "cap", props: captionProps(preset, text, +wr.toFixed(3)) });
+        name: "cap", props: captionProps(preset, text, +wr.toFixed(3), spans) });
     }
     T += dur;
   });

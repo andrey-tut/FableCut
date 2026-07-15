@@ -62,7 +62,7 @@ const ANIMATABLE = ["x", "y", "scale", "rotation", "opacity", "volume", "speed",
 const TRANSITIONS = ["none", "fade", "slide-left", "slide-right", "slide-up", "slide-down",
   "zoom", "wipe", "wipe-right", "wipe-up", "wipe-down", "iris", "spin", "blur", "whip",
   "glitch", "pop"];
-const TEXT_ANIMS = ["none", "typewriter", "word-pop", "word-slide", "karaoke",
+const TEXT_ANIMS = ["none", "typewriter", "word-pop", "word-slide", "karaoke", "highlight",
   "letter-pop", "wave", "bounce", "shake",
   "clip-reveal", "zoom-in", "font-cut", "rise-mask"];
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "lighter", "soft-light",
@@ -2378,7 +2378,7 @@ function drawText(c, p, local) {
     g.addColorStop(1, p.color2);
     return g;
   };
-  const paint = (str, x, y, alpha = 1) => {
+  const paint = (str, x, y, alpha = 1, colorOverride = null) => {
     if (alpha <= 0) return;
     const keep = ctx2d.globalAlpha;
     ctx2d.globalAlpha = keep * clamp(alpha, 0, 1);
@@ -2392,15 +2392,15 @@ function drawText(c, p, local) {
     if (p.glow > 0) { // neon: colored halo, double-fill for intensity
       ctx2d.shadowColor = p.glowColor || p.color || "#fff";
       ctx2d.shadowBlur = (+p.glow) * size / 40;
-      ctx2d.fillStyle = fillFor(y);
+      ctx2d.fillStyle = colorOverride || fillFor(y);
       ctx2d.fillText(str, x, y);
       ctx2d.fillText(str, x, y);
     } else if (shadowBlur > 0) {
       ctx2d.shadowColor = "rgba(0,0,0,.7)"; ctx2d.shadowBlur = shadowBlur; ctx2d.shadowOffsetY = shadowBlur / 3;
-      ctx2d.fillStyle = fillFor(y);
+      ctx2d.fillStyle = colorOverride || fillFor(y);
       ctx2d.fillText(str, x, y);
     } else {
-      ctx2d.fillStyle = fillFor(y);
+      ctx2d.fillStyle = colorOverride || fillFor(y);
       ctx2d.fillText(str, x, y);
     }
     ctx2d.shadowColor = "transparent"; ctx2d.shadowBlur = 0; ctx2d.shadowOffsetY = 0;
@@ -2518,6 +2518,31 @@ function drawText(c, p, local) {
         }
         x += widths[j];
       });
+    });
+    return;
+  }
+  // ── TRUE per-word sync (whisper): p.words = [{w,s,e}] clip-local seconds.
+  //    "highlight" = active word accent+scaled (Submagic look); "karaoke" = dim→lit on the word. ──
+  if (Array.isArray(p.words) && p.words.length && (anim === "highlight" || anim === "karaoke")) {
+    ctx2d.textAlign = "center";
+    const sp2 = ctx2d.measureText(" ").width;
+    const hlColor = p.highlightColor || "#ffd166";
+    const strs = p.words.map((w) => (p.uppercase ? String(w.w).toUpperCase() : String(w.w)));
+    const ww = strs.map((s) => ctx2d.measureText(s).width);
+    const totalW = ww.reduce((a, b) => a + b, 0) + sp2 * Math.max(0, strs.length - 1);
+    let x = -totalW / 2;
+    strs.forEach((s, j) => {
+      const cx = x + ww[j] / 2, wd = p.words[j];
+      const active = local >= wd.s && local < wd.e, spoken = local >= wd.e;
+      if (anim === "highlight") {
+        if (active) { ctx2d.save(); ctx2d.translate(cx, 0); ctx2d.scale(1.12, 1.12);
+          paint(s, 0, 0, 1, hlColor); ctx2d.restore(); }
+        else paint(s, cx, 0, spoken ? 1 : 0.5);
+      } else { // karaoke synced to real word start
+        const u = clamp((local - wd.s) / 0.1, 0, 1);
+        paint(s, cx, 0, local >= wd.s ? 0.35 + 0.65 * u : 0.3);
+      }
+      x += ww[j] + sp2;
     });
     return;
   }
