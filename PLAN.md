@@ -41,6 +41,19 @@ node server.js
 
 Прапорці: `--speed 1.06`, `--target-min N`, `--format horizontal|vertical`, `--gap 0.5`, `--no-blur`, `--fresh`.
 
+## 🎬 Експорт у MP4 БЕЗ браузера (render.js)
+
+FableCut експортує у браузері — а він висне на важких відео. `render.js` рендерить
+**headless** через ffmpeg (текст — через Python PIL `_caps.py`, бо цей ffmpeg без libass/drawtext):
+
+```bash
+node render.js --out ~/Movies/recut.mp4            # весь проєкт
+node render.js --segments 2 --out /tmp/test.mp4    # швидкий тест
+node render.js --music track.mp3 --music-vol 0.06  # + тиха фонова музика
+```
+Збирає екран(contain) + вебку-PiP + голос + прискорення, **посинхронні субтитри**
+(активне слово золоте), **редакцію PII** (drawbox), інтро-плашку. Потребує `python3` + Pillow.
+
 ## Один файл → кліпи-моменти (plan.js)
 
 ```bash
