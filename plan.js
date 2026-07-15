@@ -47,6 +47,16 @@ const uid = (p) => p + Math.random().toString(36).slice(2, 8);
 const die = (m) => { console.error("✗ " + m); process.exit(1); };
 const log = (m) => console.log("  " + m);
 
+// Філер-детектор: ловить «е-е-е», «м-м-м», «ееее», «ммм», «эм», «угу» тощо
+// (спершу знімає дефіси/пунктуацію, тоді перевіряє повтор однієї літери або словник).
+const FILLER_RE = /^(?:хм+|мм+|ее+|аа+|ээ+|уу+|ыы+|эм+|ем+|ам+|угу|ага|um+|uh+|er+|hmm+|ehm+|э|м)$/i;
+function isFiller(word) {
+  const t = String(word || "").toLowerCase().replace(/[^\p{L}]/gu, "");
+  if (!t) return true;                          // лише пунктуація
+  if (t.length >= 2 && /^(.)\1+$/u.test(t)) return true; // ееее, ммм, ааа, «м-м-м»→ммм
+  return FILLER_RE.test(t);
+}
+
 function loadEnv() {
   const f = path.join(ROOT, ".env");
   if (!fs.existsSync(f)) return;
@@ -337,4 +347,4 @@ async function main() {
 
 if (require.main === module) main().catch((e) => die(e.message || String(e)));
 module.exports = { PRESETS, buildProject, chunkWords, captionProps, ffprobe,
-  extractAudio, transcribe, buildTranscriptText, loadEnv, uid, llmJSON, die, log };
+  extractAudio, transcribe, buildTranscriptText, loadEnv, uid, llmJSON, die, log, isFiller };

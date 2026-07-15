@@ -25,7 +25,7 @@ const PROJECT = path.join(ROOT, "project.json");
 
 function args(argv) {
   const a = { dir: "", screen: "", webcam: "", mic: "", lang: "uk", speed: 1.06,
-    format: "horizontal", targetMin: 5, gap: 0.5, cam: "br", dryRun: false, fresh: false, noBlur: false };
+    format: "horizontal", targetMin: 5, gap: 0.5, cam: "br", dryRun: false, fresh: false, noBlur: false, keep: "" };
   for (let i = 0; i < argv.length; i++) { const x = argv[i];
     if (x === "--dir") a.dir = argv[++i]; else if (x === "--screen") a.screen = argv[++i];
     else if (x === "--webcam") a.webcam = argv[++i]; else if (x === "--mic") a.mic = argv[++i];
@@ -33,7 +33,7 @@ function args(argv) {
     else if (x === "--format") a.format = argv[++i]; else if (x === "--target-min") a.targetMin = parseFloat(argv[++i]);
     else if (x === "--gap") a.gap = parseFloat(argv[++i]); else if (x === "--cam") a.cam = argv[++i];
     else if (x === "--dry-run") a.dryRun = true; else if (x === "--fresh") a.fresh = true;
-    else if (x === "--no-blur") a.noBlur = true; }
+    else if (x === "--no-blur") a.noBlur = true; else if (x === "--keep") a.keep = argv[++i]; }
   return a;
 }
 
@@ -113,6 +113,30 @@ function writeRedactSVG(w, h) {
   return "/media/redact.svg";
 }
 
+/* EDL: keep-id речень → плоскі ЧИСТІ фрагменти (філери вирізані, тільки мертві паузи).
+   gap=0.9с — консервативно, щоб НЕ рубати природний ритм думки. Хронологічно. */
+function keepRuns(keepIds, sentences, words, gap, blocks) {
+  const sectionOf = {};
+  for (const b of (blocks || [])) for (const id of (b.ids || [])) if (sectionOf[id] == null) sectionOf[id] = b.screen || b.topic || "";
+  const runs = [];
+  for (const id of [...keepIds].sort((x, y) => x - y)) {
+    const s = sentences[id]; if (!s) continue;
+    const w = words.slice(s.i0, s.i1 + 1).filter((x) => !P.isFiller(x.text));
+    if (!w.length) continue;
+    let cur = [w[0]];
+    const flush = () => {
+      if (cur.length && cur[cur.length - 1].end - cur[0].start >= 0.2)
+        runs.push({ start: cur[0].start, end: cur[cur.length - 1].end, words: cur.slice(), section: sectionOf[id] || "" });
+    };
+    for (let k = 1; k < w.length; k++) {
+      if (w[k].start - cur[cur.length - 1].end > gap) { flush(); cur = []; }
+      cur.push(w[k]);
+    }
+    flush();
+  }
+  return runs;
+}
+
 /* лінк (не копія — файли важкі) у media/ */
 function linkMedia(src) {
   fs.mkdirSync(MEDIA, { recursive: true });
@@ -133,55 +157,64 @@ function buildScreencast(m, script, a, region) {
   const clips = [], markers = [], redactClips = [];
   let T = 0, prevSection = null;
 
-  for (const seg of script.segments) {
-    const s = Math.max(0, +seg.start), e = Math.min(m.screen.duration, +seg.end);
-    if (!(e > s)) continue;
-    const segWords = m.words.filter((w) => w.start >= s - 0.2 && w.end <= e + 0.2);
-    const runs = speechRuns(segWords, a.gap, false);
-    if (!runs.length) continue;
-    const segT = T; let first = true;
-
-    for (const run of runs) {
-      const Lsrc = run.end - run.start, D = Lsrc / sp;
-      const base = { start: +T.toFixed(3), in: +run.start.toFixed(3), duration: +D.toFixed(3) };
-      // екран V1
-      clips.push({ id: P.uid("c_"), mediaId: m.screen.id, kind: "video", track: "V1", ...base,
-        name: "screen", props: { fit: "contain", speed: sp, volume: 0 },
-        ...(first && segT > 0 ? { transitionIn: { type: "fade", duration: 0.25 } } : {}) });
-      // вебка PiP V2
-      clips.push({ id: P.uid("c_"), mediaId: m.webcam.id, kind: "video", track: "V2", ...base,
-        name: "cam", props: { fit: "cover", speed: sp, volume: 0, scale: pipScale, x: Math.round(pipX), y: Math.round(pipY), cornerRadius: 22 } });
-      // голос A1
-      clips.push({ id: P.uid("c_"), mediaId: m.mic.id, kind: "audio", track: "A1", ...base,
-        name: "voice", props: { speed: sp, volume: 1 } });
-      // субтитри V3 (час масштабуємо на /sp)
-      for (const line of P.chunkWords(run.words)) {
-        const ls = line[0].start, le = line[line.length - 1].end;
-        const spans = line.map((w) => ({ w: w.text.trim(),
-          s: +Math.max(0, (w.start - ls) / sp).toFixed(3), e: +((w.end - ls) / sp).toFixed(3) }));
-        clips.push({ id: P.uid("c_"), mediaId: null, kind: "text", track: "V3",
-          start: +(T + (ls - run.start) / sp).toFixed(3), in: 0,
-          duration: +Math.max(0.4, (le - ls) / sp).toFixed(3), name: "cap",
-          props: P.captionProps(preset, line.map((w) => w.text.trim()).join(" "),
-            +Math.max(0.08, (le - ls) / sp / line.length).toFixed(3), spans) });
-      }
-      // блюр PII: перетин run з sensitive
-      if (region) for (const sv of (script.sensitive || [])) {
-        const bs = Math.max(run.start, +sv.start), be = Math.min(run.end, +sv.end);
-        if (be > bs) redactClips.push({ start: +(T + (bs - run.start) / sp).toFixed(3),
-          duration: +Math.max(0.3, (be - bs) / sp).toFixed(3) });
-      }
-      T += D; first = false;
+  // Плоский список ЧИСТИХ фрагментів. EDL-режим (script._runs) — вже цілі думки без
+  // філерів (keepRuns). Інакше — старий recut через speechRuns по сегментах.
+  let allRuns = [];
+  if (script._runs && script._runs.length) {
+    allRuns = script._runs;
+  } else {
+    for (const seg of script.segments) {
+      const s = Math.max(0, +seg.start), e = Math.min(m.screen.duration, +seg.end);
+      if (!(e > s)) continue;
+      const segWords = m.words.filter((w) => w.start >= s - 0.2 && w.end <= e + 0.2);
+      for (const run of speechRuns(segWords, a.gap, false))
+        allRuns.push({ start: run.start, end: run.end, words: run.words, section: seg.section, topic: seg.topic });
     }
-    if (seg.section && seg.section !== prevSection) {
+  }
+
+  for (const run of allRuns) {
+    const Lsrc = run.end - run.start, D = Lsrc / sp;
+    if (!(D > 0)) continue;
+    const segT = T, newSection = run.section && run.section !== prevSection;
+    const base = { start: +T.toFixed(3), in: +run.start.toFixed(3), duration: +D.toFixed(3) };
+    // екран V1
+    clips.push({ id: P.uid("c_"), mediaId: m.screen.id, kind: "video", track: "V1", ...base,
+      name: "screen", props: { fit: "contain", speed: sp, volume: 0 },
+      ...(newSection && segT > 0 ? { transitionIn: { type: "fade", duration: 0.25 } } : {}) });
+    // вебка PiP V2
+    clips.push({ id: P.uid("c_"), mediaId: m.webcam.id, kind: "video", track: "V2", ...base,
+      name: "cam", props: { fit: "cover", speed: sp, volume: 0, scale: pipScale, x: Math.round(pipX), y: Math.round(pipY), cornerRadius: 22 } });
+    // голос A1
+    clips.push({ id: P.uid("c_"), mediaId: m.mic.id, kind: "audio", track: "A1", ...base,
+      name: "voice", props: { speed: sp, volume: 1 } });
+    // субтитри V3 (час масштабуємо на /sp)
+    for (const line of P.chunkWords(run.words)) {
+      const ls = line[0].start, le = line[line.length - 1].end;
+      const spans = line.map((w) => ({ w: w.text.trim(),
+        s: +Math.max(0, (w.start - ls) / sp).toFixed(3), e: +((w.end - ls) / sp).toFixed(3) }));
+      clips.push({ id: P.uid("c_"), mediaId: null, kind: "text", track: "V3",
+        start: +(T + (ls - run.start) / sp).toFixed(3), in: 0,
+        duration: +Math.max(0.4, (le - ls) / sp).toFixed(3), name: "cap",
+        props: P.captionProps(preset, line.map((w) => w.text.trim()).join(" "),
+          +Math.max(0.08, (le - ls) / sp / line.length).toFixed(3), spans) });
+    }
+    // блюр PII: перетин run з sensitive
+    if (region) for (const sv of (script.sensitive || [])) {
+      const bs = Math.max(run.start, +sv.start), be = Math.min(run.end, +sv.end);
+      if (be > bs) redactClips.push({ start: +(T + (bs - run.start) / sp).toFixed(3),
+        duration: +Math.max(0.3, (be - bs) / sp).toFixed(3) });
+    }
+    // секційний лейбл при зміні блоку
+    if (newSection) {
       clips.push({ id: P.uid("c_"), mediaId: null, kind: "text", track: "V3",
         start: +segT.toFixed(3), in: 0, duration: 2, name: "section",
-        props: { text: seg.section, font: preset.font, fontSize: Math.round(preset.fontSize * 0.7),
+        props: { text: run.section, font: preset.font, fontSize: Math.round(preset.fontSize * 0.7),
           color: "#fff", bgColor: "#000", bgOpacity: 0.5, uppercase: true, align: "center",
           textAnim: "rise-mask", y: -Math.round(H * 0.34) } });
-      prevSection = seg.section;
+      markers.push({ t: +segT.toFixed(2), label: (run.section || "").slice(0, 22) });
+      prevSection = run.section;
     }
-    markers.push({ t: +segT.toFixed(2), label: (seg.section || seg.topic || "").slice(0, 22) });
+    T += D;
   }
 
   // redaction svg-бокс над PII-регіоном (у канві, з урахуванням contain)
@@ -216,29 +249,42 @@ async function main() {
   const { words, segments } = await transcribeCached(a.mic, a.lang, a.fresh);
   P.log(`${words.length} слів, ${(words[words.length - 1]?.end / 60 || 0).toFixed(1)} хв`);
 
-  // 2. пересценарій (recut)
-  console.log("\n▶ Пересценарій (recut по тексту)");
+  // 2. EDL (--keep, редакторський keep-список) АБО старий пересценарій (recut)
   const scriptCache = path.join(CACHE, "screencast.script.json");
   let script;
-  if (!a.fresh && fs.existsSync(scriptCache)) { script = JSON.parse(fs.readFileSync(scriptCache, "utf8")); P.log("сценарій з кешу"); }
-  else {
-    const tText = (segments.length ? segments : words).map((r) => `[${(+r.start).toFixed(1)}] ${(r.text || r.word).trim()}`).join("\n");
-    const provider = process.env.OPENAI_API_KEY ? "openai" : "gemini"; // OpenAI надійніший тут
-    script = await P.llmJSON(recutPrompt(tText, a.targetMin), provider);
-    fs.mkdirSync(CACHE, { recursive: true }); fs.writeFileSync(scriptCache, JSON.stringify(script, null, 2));
+  if (a.keep) {
+    console.log("\n▶ EDL з keep-списку редакторської команди");
+    const sentences = JSON.parse(fs.readFileSync(path.join(CACHE, "sentences.json"), "utf8"));
+    const kd = JSON.parse(fs.readFileSync(a.keep, "utf8"));
+    const keepIds = Array.isArray(kd) ? kd : (kd.keep || []);
+    const oldScript = fs.existsSync(scriptCache) ? JSON.parse(fs.readFileSync(scriptCache, "utf8")) : {};
+    const runs = keepRuns(keepIds, sentences, words, 0.9, kd.blocks);
+    if (!runs.length) P.die("keepRuns порожній");
+    script = { title: kd.title || oldScript.title || "Recut", _runs: runs, sensitive: kd.sensitive || oldScript.sensitive || [] };
+    const total = runs.reduce((n, r) => n + (r.end - r.start), 0) / a.speed;
+    console.log(`  ${keepIds.length} речень → ${runs.length} чистих фрагментів (філери вирізані, хронологічно)`);
+    console.log(`  🔒 блюр: ${(script.sensitive || []).map((s) => `[${(+s.start).toFixed(0)}–${(+s.end).toFixed(0)}]`).join(" ") || "—"}`);
+    console.log(`  ≈ ${(total / 60).toFixed(1)} хв після прискорення ×${a.speed}`);
+  } else {
+    console.log("\n▶ Пересценарій (recut по тексту)");
+    if (!a.fresh && fs.existsSync(scriptCache)) { script = JSON.parse(fs.readFileSync(scriptCache, "utf8")); P.log("сценарій з кешу"); }
+    else {
+      const tText = (segments.length ? segments : words).map((r) => `[${(+r.start).toFixed(1)}] ${(r.text || r.word).trim()}`).join("\n");
+      const provider = process.env.OPENAI_API_KEY ? "openai" : "gemini";
+      script = await P.llmJSON(recutPrompt(tText, a.targetMin), provider);
+      fs.mkdirSync(CACHE, { recursive: true }); fs.writeFileSync(scriptCache, JSON.stringify(script, null, 2));
+    }
+    const segs = (script.segments || []).filter((x) => x && x.start != null && x.end != null);
+    if (!segs.length) P.die("recut не повернув сегментів");
+    script.segments = segs;
+    const total = segs.reduce((n, s) => n + (+s.end - +s.start), 0) / a.speed;
+    console.log(`\n── СЦЕНАРІЙ: ${script.title || ""} ──`);
+    if (script.hook) console.log(`  гачок: ${script.hook}`);
+    (script.outline || []).forEach((o, i) => console.log(`  §${i + 1} ${o.section} — ${o.summary || ""}`));
+    segs.forEach((s, i) => console.log(`   ${i + 1}. [${(+s.start).toFixed(0)}–${(+s.end).toFixed(0)}] «${s.section || ""}» ${s.topic || ""}`));
+    (script.sensitive || []).forEach((s) => console.log(`  🔒 блюр [${(+s.start).toFixed(0)}–${(+s.end).toFixed(0)}] ${s.what || ""}`));
+    console.log(`  ≈ ${(total / 60).toFixed(1)} хв після нарізки+прискорення ×${a.speed}`);
   }
-  const segs = (script.segments || []).filter((x) => x && x.start != null && x.end != null);
-  if (!segs.length) P.die("recut не повернув сегментів");
-  script.segments = segs;
-
-  const total = segs.reduce((n, s) => n + (Math.min(+s.end) - +s.start), 0) / a.speed;
-  console.log(`\n── СЦЕНАРІЙ: ${script.title || ""} ──`);
-  if (script.hook) console.log(`  гачок: ${script.hook}`);
-  (script.outline || []).forEach((o, i) => console.log(`  §${i + 1} ${o.section} — ${o.summary || ""}`));
-  console.log("  сегменти:");
-  segs.forEach((s, i) => console.log(`   ${i + 1}. [${(+s.start).toFixed(0)}–${(+s.end).toFixed(0)}] «${s.section || ""}» ${s.topic || ""}`));
-  (script.sensitive || []).forEach((s) => console.log(`  🔒 блюр [${(+s.start).toFixed(0)}–${(+s.end).toFixed(0)}] ${s.what || ""}`));
-  console.log(`  ≈ ${(total / 60).toFixed(1)} хв після нарізки+прискорення ×${a.speed}`);
 
   if (a.dryRun) { P.log("--dry-run: без збірки"); return; }
 

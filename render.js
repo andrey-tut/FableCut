@@ -27,7 +27,7 @@ const FONT = ["/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Ar
 
 function args(av) {
   const a = { out: path.join(ROOT, "exports", "recut.mp4"), segments: 0, music: "",
-    musicVol: 0.06, introDur: 2.4, keepTemp: false, clicks: "", zoomF: 1.28 };
+    musicVol: 0.04, introDur: 2.4, keepTemp: false, clicks: "", zoomF: 1.28 };
   for (let i = 0; i < av.length; i++) { const x = av[i];
     if (x === "--out") a.out = av[++i]; else if (x === "--segments") a.segments = parseInt(av[++i], 10);
     else if (x === "--music") a.music = av[++i]; else if (x === "--music-vol") a.musicVol = parseFloat(av[++i]);
@@ -111,45 +111,66 @@ function main() {
     if ((i + 1) % 10 === 0 || i === runs.length - 1) console.log(`  сегменти ${i + 1}/${runs.length}`);
   }
 
-  // 2. субтитри + інтро через PIL
+  // 2. графіка (cold-open + дисклеймер) через PIL
+  const CODUR = 7.0, leadDur = CODUR + a.introDur;
+  const gfxDir = path.join(tmp, "gfx");
+  const gfxSpec = { W, H, fps: FPS, font: FONT, gfxDir,
+    coldopen: { dur: CODUR, lines: ["3 ФІРМИ", "1 АДРЕСА", "1 ТЕЛЕФОН"],
+      sub: "Бізнес, який радять усі українці в Данії" },
+    disclaimer: { text: "Публічні дані CVR / Virk + соцмережі.\nОцінка — особиста думка. Чутливе заблюровано." } };
+  fs.writeFileSync(path.join(tmp, "gfx.json"), JSON.stringify(gfxSpec));
+  console.log("  малюю графіку (cold-open + дисклеймер)…");
+  const pg = spawnSync("python3", [path.join(ROOT, "_gfx.py"), path.join(tmp, "gfx.json")], { encoding: "utf8", timeout: 600000 });
+  if (pg.status !== 0) throw new Error("PIL gfx:\n" + (pg.stderr || pg.stdout || "").split("\n").slice(-6).join("\n"));
+
+  // 3. субтитри через PIL (зсув на leadDur = cold-open + інтро)
   const framesDir = path.join(tmp, "caps"), introPng = path.join(tmp, "intro.png");
   const bandH = Math.round(H * 0.26), capY = Math.round(H * 0.60);
-  const totalDur = a.introDur + bodyDur;
-  const spec = { W, H, fps: FPS, introDur: a.introDur, totalDur, bandH,
+  const totalDur = leadDur + bodyDur;
+  const spec = { W, H, fps: FPS, introDur: leadDur, totalDur, bandH,
     font: FONT, fontSize: Math.round(H * 0.05), framesDir, introPng, introText: doc.name || "",
     captions: caps.map((c) => ({ start: c.start, dur: c.duration, uppercase: !!c.props.uppercase, words: c.props.words })) };
-  const specFile = path.join(tmp, "spec.json"); fs.writeFileSync(specFile, JSON.stringify(spec));
+  fs.writeFileSync(path.join(tmp, "spec.json"), JSON.stringify(spec));
   console.log("  малюю субтитри (PIL)…");
-  const py = spawnSync("python3", [path.join(ROOT, "_caps.py"), specFile], { encoding: "utf8", timeout: 1800000 });
+  const py = spawnSync("python3", [path.join(ROOT, "_caps.py"), path.join(tmp, "spec.json")], { encoding: "utf8", timeout: 1800000 });
   if (py.status !== 0) throw new Error("PIL:\n" + (py.stderr || py.stdout || "").split("\n").slice(-6).join("\n"));
 
-  // 3. інтро-відео з PNG + concat
+  // 4. cold-open відео + інтро-плашка + concat із сегментами
+  const coMp4 = path.join(tmp, "coldopen.mp4");
+  ff(["-framerate", String(FPS), "-i", path.join(gfxDir, "coldopen", "%06d.png"),
+    "-f", "lavfi", "-t", String(CODUR), "-i", "anullsrc=r=48000:cl=stereo",
+    "-map", "0:v", "-map", "1:a", "-t", String(CODUR), "-r", String(FPS), "-c:v", "libx264", "-preset", "veryfast",
+    "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", coMp4]);
   const introMp4 = path.join(tmp, "intro.mp4");
   ff(["-loop", "1", "-t", String(a.introDur), "-i", introPng,
     "-f", "lavfi", "-t", String(a.introDur), "-i", "anullsrc=r=48000:cl=stereo",
     "-map", "0:v", "-map", "1:a", "-r", String(FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
     "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", introMp4]);
   const listFile = path.join(tmp, "list.txt");
-  fs.writeFileSync(listFile, [introMp4, ...segFiles].map((p) => `file '${p}'`).join("\n"));
+  fs.writeFileSync(listFile, [coMp4, introMp4, ...segFiles].map((p) => `file '${p}'`).join("\n"));
   const pre = path.join(tmp, "pre.mp4");
   ff(["-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", pre]);
 
-  // 4. фінал: накладка субтитрів + редакція(drawbox) + опц. музика
+  // 5. фінал: субтитри + редакція(drawbox) + дисклеймер + опц. музика
   let vf = `[0:v][1:v]overlay=0:${capY}:eof_action=pass[vc]`;
   let vlab = "vc";
   if (blurs.length) {
     const b0 = blurs[0], m = byId[b0.mediaId] || {};
     const bw = m.width || 320, bh = m.height || 140;
     const bx = Math.round(W / 2 + b0.props.x - bw / 2), by = Math.round(H / 2 + b0.props.y - bh / 2);
-    const en = blurs.map((b) => `between(t,${(a.introDur + b.start).toFixed(2)},${(a.introDur + b.start + b.duration).toFixed(2)})`).join("+");
-    vf += `;[vc]drawbox=x=${bx}:y=${by}:w=${bw}:h=${bh}:color=0x0d1117@1:t=fill:enable='${en}'[vb]`;
+    const en = blurs.map((b) => `between(t,${(leadDur + b.start).toFixed(2)},${(leadDur + b.start + b.duration).toFixed(2)})`).join("+");
+    vf += `;[${vlab}]drawbox=x=${bx}:y=${by}:w=${bw}:h=${bh}:color=0x0d1117@1:t=fill:enable='${en}'[vb]`;
     vlab = "vb";
   }
-  const inputs = ["-i", pre, "-framerate", String(FPS), "-i", path.join(framesDir, "%06d.png")];
+  const inputs = ["-i", pre, "-framerate", String(FPS), "-i", path.join(framesDir, "%06d.png"),
+    "-loop", "1", "-i", path.join(gfxDir, "disclaimer.png")];
+  vf += `;[${vlab}][2:v]overlay=0:0:enable='between(t,${leadDur.toFixed(2)},${(leadDur + 6).toFixed(2)})'[vd]`;
+  vlab = "vd";
   let amap = "0:a";
   if (a.music && fs.existsSync(a.music)) {
     inputs.push("-stream_loop", "-1", "-i", a.music);
-    vf += `;[2:a]volume=${a.musicVol}[mv];[0:a][mv]amix=inputs=2:duration=first:dropout_transition=0[am]`;
+    // голос лишається на повній гучності (normalize=0!), музика ледь чутна
+    vf += `;[0:a]volume=1.3[vv];[3:a]volume=${a.musicVol}[mv];[vv][mv]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[am]`;
     amap = "[am]";
   }
   fs.mkdirSync(path.dirname(a.out), { recursive: true });
