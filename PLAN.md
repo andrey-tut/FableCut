@@ -24,6 +24,23 @@ node server.js                # → http://localhost:7777
 - ріже **довгі паузи** (`--gap 0.55`) і **філери** «ееее/ммм» (вимкнути: `--keep-fillers`)
 - `--target-min N` — цільова тривалість · `--dry-run` — лише план без запису
 
+## 🎥 Запис екрана (Screen Studio: екран+вебка+мікрофон) → перекроєний монтаж (screencast.js)
+
+Синхронні канали ОДНОГО запису → пересценарій + прискорення + блюр PII. Дістає сирі
+канали навіть з `.screenstudio`-бандла (без платного експорту):
+
+```bash
+node screencast.js --dir /path/to/recording --lang uk --speed 1.06 --target-min 5 --dry-run
+node screencast.js --dir /path/to/recording --lang uk --speed 1.06     # повний збір
+node server.js
+```
+- транскрибує мікрофон → LLM робить ТІСНИЙ **пересценарій** (recut по тексту, логічна структура)
+- **jump-cut** пауз/філерів; синхронно кладе екран(V1) + вебку-PiP(V2) + голос(A1); ×`--speed`
+- **блюр PII**: vision (gpt-4o) знаходить регіон особистих даних (Stripe тощо) → SVG-бокс над ним
+- субтитри(V3), секційні лейбли, маркери. Важкі файли **лінкуються** (не копіюються). Кеш у `.cache/`
+
+Прапорці: `--speed 1.06`, `--target-min N`, `--format horizontal|vertical`, `--gap 0.5`, `--no-blur`, `--fresh`.
+
 ## Один файл → кліпи-моменти (plan.js)
 
 ```bash
