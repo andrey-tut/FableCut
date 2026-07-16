@@ -20,30 +20,39 @@ async function main() {
   const text = sentences.map((s, i) => `[${i}] (${s.start.toFixed(0)}-${s.end.toFixed(0)}) ${s.text}`).join("\n");
   const provider = process.env.OPENAI_API_KEY ? "openai" : "gemini";
 
-  console.log(`▶ Редакторський прохід — ЛАЙТ-ТРИМ (${sentences.length} речень, ${provider})…`);
-  const editPrompt = `Нижче ${sentences.length} речень скрінкасту автора (суржик укр+рос): він розбирає бізнес Лаури в Данії — Facebook, Instagram, Google, Krak, Stripe, реєстр CVR/Virk, фінанси. Формат: [id] (start-end) текст.
+  const targetMin = parseFloat((process.argv.includes("--target-min") ? process.argv[process.argv.indexOf("--target-min") + 1] : "") || "10");
+  const totalMin = sentences.reduce((n, s) => n + (s.end - s.start), 0) / 60;
+  console.log(`▶ Редакторський прохід — РОЗУМНИЙ ${targetMin}-хв монтаж (${sentences.length} речень ≈ ${totalMin.toFixed(1)} хв, ${provider})…`);
+  const editPrompt = `Нижче ${sentences.length} речень скрінкасту автора (суржик укр+рос): розбір бізнесу Лаури в Данії — Facebook, Instagram, Google, Krak, Stripe, реєстр CVR/Virk, фінанси. Формат: [id] (start-end сек) текст. Загальне мовлення ≈ ${totalMin.toFixed(0)} хв.
 
-ЗАВДАННЯ — ЛАЙТ-ТРИМ, НЕ агресивно. Це відео з ГОЛОСОМ І СЛОВАМИ автора — їх ЗБЕРІГАЄМО. Лиши ПРАКТИЧНО ВСЕ по суті, у ХРОНОЛОГІЧНОМУ порядку.
-ВИКИНЬ ЛИШЕ:
-1. філери-звуки: е-е-е, м-м-м, ммм;
-2. явні фальш-старти (почав фразу, кинув і переформулював — лиши фінальну версію, не обидві);
-3. ДОСЛІВНІ повтори тієї самої думки (лиши один раз);
-4. чистий навігаційний треп БЕЗ змісту («давайте перейдем», «зайдем сюда», «нажимаем энтер»);
-5. найдовші роздуми геть не по темі (напр. «хейтити чи ні»).
-НЕ ріж суть. НЕ переставляй (тільки хронологічно). Лиши ЦІЛІ думки — не рубай посеред. Якщо сумніваєшся — ЛИШАЙ. Ціль: ~65–75% речень (це ТВІЙ орієнтир, не жорсткий).
-${RULES}
+ЗАВДАННЯ: оціни ВАЖЛИВІСТЬ (смислову навантаженість) КОЖНОГО речення від 0 до 5:
+0 = сміття (філер е-е-е/м-м-м/ммм, навігаційний треп «давайте перейдем/зайдем сюда/нажимаем энтер», ДОСЛІВНИЙ повтор, whisper-каша без сенсу) — викинути завжди;
+1 = майже пусте, вода, рамблінг;
+2 = слабкий зміст, менш важлива деталь;
+3 = нормальний зміст по темі;
+4 = важливий факт / знахідка / оцінка по суті;
+5 = КЛЮЧОВА теза / цифра / висновок.
+Оціни ВСІ ${sentences.length} id (0..${sentences.length - 1}). Хронологію та бюджет часу доб'є код. Stripe-момент (~299-325с) познач у sensitive.
 
 Поверни ЛИШЕ JSON:
-{"title":"заголовок","keep":[id,… ЗРОСТАЮЧЕ],
+{"title":"чіпкий заголовок",
+ "imp":[[id,score],… для ВСІХ id],
  "blocks":[{"topic":"…","screen":"google|facebook|instagram|krak|stripe|cvr|вступ|висновок","ids":[…]}],
- "sensitive":[{"start":сек,"end":сек,"what":"особисті дані Stripe"}],
- "removed_summary":"коротко що вирізав"}
+ "sensitive":[{"start":сек,"end":сек,"what":"особисті дані Stripe"}]}
 
 РЕЧЕННЯ:
 ${text}`;
-  let plan = await P.llmJSON(editPrompt, provider);
-  let keep = (plan.keep || []).filter(Number.isInteger).filter((id) => sentences[id]).sort((a, b) => a - b);
-  if (!keep.length) P.die("редактор не повернув keep");
+  const plan = await P.llmJSON(editPrompt, provider);
+  // ДЕТЕРМІНОВАНИЙ бюджет: беремо найважливіші речення доти, доки не наберемо ~${targetMin} хв; хронологічно
+  const scoreById = {};
+  for (const pr of (plan.imp || [])) if (Array.isArray(pr) && sentences[pr[0]] != null) scoreById[pr[0]] = +pr[1] || 0;
+  const budget = targetMin * 1.06 * 60;
+  const cand = sentences.map((_, i) => i).filter((id) => (scoreById[id] ?? 2) > 0)
+    .sort((a, b) => (scoreById[b] ?? 2) - (scoreById[a] ?? 2) || a - b);
+  let keep = [], acc = 0;
+  for (const id of cand) { keep.push(id); acc += sentences[id].end - sentences[id].start; if (acc >= budget) break; }
+  keep = keep.sort((a, b) => a - b);
+  if (!keep.length) P.die("редактор не повернув оцінки");
 
   // QA
   const keptText = (k) => k.map((id) => sentences[id]?.text).filter(Boolean).join(" ");
