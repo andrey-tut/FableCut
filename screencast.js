@@ -145,6 +145,32 @@ function linkMedia(src) {
   return "/media/" + base;
 }
 
+/* Субтитри → ЧИСТА УКРАЇНСЬКА: whisper дає суржик з рос. літерами; нормалізуємо всі
+   репліки одним батч-викликом, зберігаючи таймінг (рівний розподіл слів по спану run). */
+async function correctRunsToUk(runs, provider) {
+  const texts = runs.map((r, i) => `[${i}] ${r.words.map((w) => w.text.trim()).join(" ")}`).join("\n");
+  const prompt = `Нижче ${runs.length} коротких реплік із відео (суржик укр+рос, з whisper-помилками розпізнавання). Перепиши КОЖНУ ЧИСТОЮ УКРАЇНСЬКОЮ мовою — українськими словами й літерами. Виправ помилки розпізнавання: напр. "цикошапцы"→"логотипчик у шапці", "административная"→"адміністративна", "что"→"що", "Всем привет"→"Всім привіт", "бачим"→"бачимо", "дизнаться"→"дізнатися". Збережи СЕНС і приблизну кількість слів (це субтитри до мовлення). НЕ додавай зайвого, не скорочуй.
+Формат входу: [i] текст. Поверни ЛИШЕ JSON: {"uk":[[i,"чиста українська"], … для ВСІХ i від 0 до ${runs.length - 1}]}.
+
+РЕПЛІКИ:
+${texts}`;
+  try {
+    const r = await P.llmJSON(prompt, provider);
+    const byI = {};
+    for (const pr of (r.uk || [])) if (Array.isArray(pr)) byI[pr[0]] = String(pr[1] || "");
+    runs.forEach((run, i) => { run.uk = (byI[i] && byI[i].trim()) || run.words.map((w) => w.text.trim()).join(" "); });
+  } catch (e) { P.log("нормалізація UA не вдалась, лишаю оригінал: " + (e.message || e)); }
+}
+function ukWordsFor(run) {
+  const ws = String(run.uk || "").split(/\s+/).filter(Boolean);
+  if (!ws.length) return run.words;
+  const S = run.start, span = Math.max(0.15, run.end - run.start);
+  const lens = ws.map((w) => w.length + 1), tot = lens.reduce((a, b) => a + b, 0);
+  let t = S; const out = [];
+  for (let i = 0; i < ws.length; i++) { const d = span * lens[i] / tot; out.push({ text: ws[i], start: t, end: t + d }); t += d; }
+  return out;
+}
+
 function buildScreencast(m, script, a, region) {
   const preset = P.PRESETS[a.format];
   const W = preset.w, H = preset.h, sp = a.speed;
@@ -187,8 +213,9 @@ function buildScreencast(m, script, a, region) {
     // голос A1
     clips.push({ id: P.uid("c_"), mediaId: m.mic.id, kind: "audio", track: "A1", ...base,
       name: "voice", props: { speed: sp, volume: 1 } });
-    // субтитри V3 (час масштабуємо на /sp)
-    for (const line of P.chunkWords(run.words)) {
+    // субтитри V3 — ЧИСТА УКРАЇНСЬКА (run.uk), час масштабуємо на /sp
+    const capWords = run.uk ? ukWordsFor(run) : run.words;
+    for (const line of P.chunkWords(capWords)) {
       const ls = line[0].start, le = line[line.length - 1].end;
       const spans = line.map((w) => ({ w: w.text.trim(),
         s: +Math.max(0, (w.start - ls) / sp).toFixed(3), e: +((w.end - ls) / sp).toFixed(3) }));
@@ -260,6 +287,9 @@ async function main() {
     const oldScript = fs.existsSync(scriptCache) ? JSON.parse(fs.readFileSync(scriptCache, "utf8")) : {};
     const runs = keepRuns(keepIds, sentences, words, 0.9, kd.blocks);
     if (!runs.length) P.die("keepRuns порожній");
+    const ukProvider = process.env.OPENAI_API_KEY ? "openai" : "gemini";
+    console.log("  ✍ нормалізую субтитри в чисту українську…");
+    await correctRunsToUk(runs, ukProvider);
     script = { title: kd.title || oldScript.title || "Recut", _runs: runs, sensitive: kd.sensitive || oldScript.sensitive || [] };
     const total = runs.reduce((n, r) => n + (r.end - r.start), 0) / a.speed;
     console.log(`  ${keepIds.length} речень → ${runs.length} чистих фрагментів (філери вирізані, хронологічно)`);
