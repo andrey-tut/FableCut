@@ -159,10 +159,14 @@ function main() {
   let vlab = "vc";
   if (blurs.length) {
     const b0 = blurs[0], m = byId[b0.mediaId] || {};
-    const bw = m.width || 320, bh = m.height || 140;
-    const bx = Math.round(W / 2 + b0.props.x - bw / 2), by = Math.round(H / 2 + b0.props.y - bh / 2);
+    let bw = Math.min(m.width || 320, W), bh = Math.min(m.height || 140, H);
+    let bx = Math.round(W / 2 + b0.props.x - bw / 2), by = Math.round(H / 2 + b0.props.y - bh / 2);
+    bx = Math.max(0, Math.min(bx, W - bw)); by = Math.max(0, Math.min(by, H - bh));
+    bw -= bw % 2; bh -= bh % 2;                    // парні розміри для crop
     const en = blurs.map((b) => `between(t,${(leadDur + b.start).toFixed(2)},${(leadDur + b.start + b.duration).toFixed(2)})`).join("+");
-    vf += `;[${vlab}]drawbox=x=${bx}:y=${by}:w=${bw}:h=${bh}:color=0x0d1117@1:t=fill:enable='${en}'[vb]`;
+    // СПРАВЖНІЙ БЛЮР регіону: split → crop → сильний gblur → overlay назад лише у вікні
+    vf += `;[${vlab}]split=2[bbase][bblur];[bblur]crop=${bw}:${bh}:${bx}:${by},gblur=sigma=40[bcrop];` +
+      `[bbase][bcrop]overlay=${bx}:${by}:enable='${en}'[vb]`;
     vlab = "vb";
   }
   // дисклеймер: зациклений PNG, АЛЕ обмежений часом (інакше нескінченний вхід роздуває вихід!)
