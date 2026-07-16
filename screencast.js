@@ -247,6 +247,12 @@ function buildScreencast(m, script, a, region) {
   // redaction svg-бокс над PII-регіоном (у канві, з урахуванням contain)
   const media = [m.screen.media, m.webcam.media, m.mic.media];
   if (region && redactClips.length) {
+    // ГЕНЕРОВНА рамка — гарантовано накрити весь PII-віджет (email/телефон/картка, правий верх),
+    // з великим запасом, щоб дані НЕ визирали навіть якщо vision промазав
+    region = { x: Math.max(0, Math.min(region.x, 0.47) - 0.02),
+               y: Math.max(0, Math.min(region.y, 0.06) - 0.02) };
+    region.w = 1 - region.x;                       // до правого краю екрана
+    region.h = Math.min(1 - region.y, 0.66);       // згори до ~2/3 висоти
     const rw = Math.round(region.w * m.screen.width * map.s);
     const rh = Math.round(region.h * m.screen.height * map.s);
     const cx = Math.round(map.offX + (region.x + region.w / 2) * m.screen.width * map.s - W / 2);

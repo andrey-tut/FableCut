@@ -76,6 +76,9 @@ function main() {
   const even = (n) => Math.max(2, Math.round(n / 2) * 2);
   function zoomFor(sc) {
     if (!CLICKS.length || sc.duration < 1.0) return null;
+    // НЕ зумимо сегменти з PII — фіксований блюр-бокс не має «розʼїхатись» від зуму
+    const st = sc.start, en = sc.start + sc.duration;
+    if (blurs.some((b) => st < b.start + b.duration && en > b.start)) return null;
     const t0 = sc.in, t1 = sc.in + sc.duration * (sc.props.speed || 1);
     const hit = CLICKS.filter((c) => c.processTimeMs / 1000 >= t0 && c.processTimeMs / 1000 <= t1);
     if (!hit.length) return null;
