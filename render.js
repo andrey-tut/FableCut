@@ -162,8 +162,9 @@ function main() {
     vf += `;[${vlab}]drawbox=x=${bx}:y=${by}:w=${bw}:h=${bh}:color=0x0d1117@1:t=fill:enable='${en}'[vb]`;
     vlab = "vb";
   }
+  // дисклеймер: зациклений PNG, АЛЕ обмежений часом (інакше нескінченний вхід роздуває вихід!)
   const inputs = ["-i", pre, "-framerate", String(FPS), "-i", path.join(framesDir, "%06d.png"),
-    "-loop", "1", "-i", path.join(gfxDir, "disclaimer.png")];
+    "-loop", "1", "-t", (totalDur + 5).toFixed(1), "-i", path.join(gfxDir, "disclaimer.png")];
   vf += `;[${vlab}][2:v]overlay=0:0:enable='between(t,${leadDur.toFixed(2)},${(leadDur + 6).toFixed(2)})'[vd]`;
   vlab = "vd";
   let amap = "0:a";
@@ -176,7 +177,7 @@ function main() {
   fs.mkdirSync(path.dirname(a.out), { recursive: true });
   ff([...inputs, "-filter_complex", vf, "-map", `[${vlab}]`, "-map", amap,
     "-r", String(FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", a.out]);
+    "-c:a", "aac", "-ar", "48000", "-ac", "2", "-t", (totalDur + 5).toFixed(1), "-movflags", "+faststart", a.out]);
 
   if (!a.keepTemp) fs.rmSync(tmp, { recursive: true, force: true });
   const sz = (fs.statSync(a.out).size / 1048576).toFixed(1);
